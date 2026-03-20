@@ -4,9 +4,9 @@
 #include "freertos/task.h"
 
 // ===== CONFIG =====
-#define SERVO_MIN_PULSEWIDTH_US 600
+#define SERVO_MIN_PULSEWIDTH_US 450
 #define SERVO_MAX_PULSEWIDTH_US 2400
-#define SERVO_MIN_DEGREE        0
+#define SERVO_MIN_DEGREE        -15
 #define SERVO_MAX_DEGREE        180
 
 #define SERVO_GPIO              14
@@ -23,7 +23,8 @@ static inline uint32_t angle_to_compare(float angle)
     if (angle > SERVO_MAX_DEGREE) angle = SERVO_MAX_DEGREE;
 
     return SERVO_MIN_PULSEWIDTH_US +
-           (angle * (SERVO_MAX_PULSEWIDTH_US - SERVO_MIN_PULSEWIDTH_US) / SERVO_MAX_DEGREE);
+           ((angle - SERVO_MIN_DEGREE) * (SERVO_MAX_PULSEWIDTH_US - SERVO_MIN_PULSEWIDTH_US) /
+            (SERVO_MAX_DEGREE - SERVO_MIN_DEGREE));
 }
 
 // ===== INIT =====
@@ -94,18 +95,25 @@ void servo_set_angle(float angle)
 // ===== SWEEP TASK (OPTIONAL) =====
 static void servo_sweep_task(void *arg)
 {
-    float angle = 90;
-    float step = 1.5;
+    (void)arg;
+    const float step = 1.5f;
 
     while (1) {
-        servo_set_angle(angle);
-        vTaskDelay(pdMS_TO_TICKS(15));
-
-        angle += step;
-
-        if (angle >= SERVO_MAX_DEGREE || angle <= SERVO_MIN_DEGREE) {
-            step = -step;
+        for (float angle = SERVO_MIN_DEGREE; angle < SERVO_MAX_DEGREE; angle += step) {
+            servo_set_angle(angle);
+            vTaskDelay(pdMS_TO_TICKS(15));
         }
+
+        servo_set_angle(SERVO_MAX_DEGREE);
+        vTaskDelay(pdMS_TO_TICKS(150));
+
+        for (float angle = SERVO_MAX_DEGREE; angle > SERVO_MIN_DEGREE; angle -= step) {
+            servo_set_angle(angle);
+            vTaskDelay(pdMS_TO_TICKS(15));
+        }
+
+        servo_set_angle(SERVO_MIN_DEGREE);
+        vTaskDelay(pdMS_TO_TICKS(150));
     }
 }
 
