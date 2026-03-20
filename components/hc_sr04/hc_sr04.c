@@ -26,6 +26,7 @@ typedef struct {
     TaskHandle_t waiting_task;
     uint32_t cap_val_begin;
     float last_distance;
+    float latest_distance;
     bool started;
 } hc_sr04_state_t;
 
@@ -104,6 +105,7 @@ void hc_sr04_init(void)
     ESP_ERROR_CHECK(mcpwm_capture_timer_start(sensor.cap_timer));
 
     sensor.last_distance = 0.0f;
+    sensor.latest_distance = 0.0f;
     sensor.started = true;
 }
 
@@ -130,6 +132,7 @@ static void hc_sr04_monitor_task(void *arg)
             }
 
             float distance = pulse_width_us / 58.0f;
+            sensor.latest_distance = distance;
 
             if (distance > 0.0f &&
                 distance < DIST_THRESHOLD_CM &&
@@ -156,4 +159,15 @@ void hc_sr04_start_monitoring(uint32_t period_ms)
 
     monitor_started = true;
     xTaskCreate(hc_sr04_monitor_task, "hc_sr04", 4096, (void *)(uintptr_t)period_ms, 5, NULL);
+}
+
+float hc_sr04_get_last_distance_cm(void)
+{
+    return sensor.latest_distance;
+}
+
+bool hc_sr04_is_target_near(float threshold_cm)
+{
+    float d = sensor.latest_distance;
+    return (d > 0.0f) && (d < threshold_cm);
 }
