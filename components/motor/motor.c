@@ -3,13 +3,15 @@
 #include "driver/gpio.h"
 
 // ===== GPIO CONFIG =====
+// Motor 1 = LEFT side  (2 DC motors in parallel)
+// Motor 2 = RIGHT side (2 DC motors in parallel)
 #define PWM_GPIO1    9
 #define RPWM_GPIO1   10
 #define LPWM_GPIO1   11
 
-#define PWM_GPIO2    12
-#define RPWM_GPIO2   13
-#define LPWM_GPIO2   14
+#define PWM_GPIO2    14
+#define RPWM_GPIO2   12
+#define LPWM_GPIO2   13
 
 // ===== PWM CONFIG =====
 #define LEDC_FREQ       5000
@@ -31,7 +33,7 @@ void motor_init(void)
     };
     ledc_timer_config(&ledc_timer);
 
-    // Motor 1
+    // Motor 1 (LEFT)
     ledc_channel_config_t ch1 = {
         .gpio_num   = PWM_GPIO1,
         .speed_mode = LEDC_LOW_SPEED_MODE,
@@ -42,7 +44,7 @@ void motor_init(void)
     };
     ledc_channel_config(&ch1);
 
-    // Motor 2
+    // Motor 2 (RIGHT)
     ledc_channel_config_t ch2 = {
         .gpio_num   = PWM_GPIO2,
         .speed_mode = LEDC_LOW_SPEED_MODE,
@@ -84,6 +86,38 @@ void motor_backward(uint32_t duty)
     gpio_set_level(RPWM_GPIO1, 0);
     gpio_set_level(LPWM_GPIO1, 1);
     gpio_set_level(RPWM_GPIO2, 0);
+    gpio_set_level(LPWM_GPIO2, 1);
+
+    ledc_set_duty(LEDC_LOW_SPEED_MODE, MOTOR1_CHANNEL, duty);
+    ledc_update_duty(LEDC_LOW_SPEED_MODE, MOTOR1_CHANNEL);
+    ledc_set_duty(LEDC_LOW_SPEED_MODE, MOTOR2_CHANNEL, duty);
+    ledc_update_duty(LEDC_LOW_SPEED_MODE, MOTOR2_CHANNEL);
+}
+
+/* Quay tại chỗ sang trái: bên trái lùi, bên phải tiến */
+void motor_turn_left(uint32_t duty)
+{
+    if (duty > DUTY_MAX) duty = DUTY_MAX;
+
+    gpio_set_level(RPWM_GPIO1, 0);  // LEFT backward
+    gpio_set_level(LPWM_GPIO1, 1);
+    gpio_set_level(RPWM_GPIO2, 1);  // RIGHT forward
+    gpio_set_level(LPWM_GPIO2, 0);
+
+    ledc_set_duty(LEDC_LOW_SPEED_MODE, MOTOR1_CHANNEL, duty);
+    ledc_update_duty(LEDC_LOW_SPEED_MODE, MOTOR1_CHANNEL);
+    ledc_set_duty(LEDC_LOW_SPEED_MODE, MOTOR2_CHANNEL, duty);
+    ledc_update_duty(LEDC_LOW_SPEED_MODE, MOTOR2_CHANNEL);
+}
+
+/* Quay tại chỗ sang phải: bên trái tiến, bên phải lùi */
+void motor_turn_right(uint32_t duty)
+{
+    if (duty > DUTY_MAX) duty = DUTY_MAX;
+
+    gpio_set_level(RPWM_GPIO1, 1);  // LEFT forward
+    gpio_set_level(LPWM_GPIO1, 0);
+    gpio_set_level(RPWM_GPIO2, 0);  // RIGHT backward
     gpio_set_level(LPWM_GPIO2, 1);
 
     ledc_set_duty(LEDC_LOW_SPEED_MODE, MOTOR1_CHANNEL, duty);

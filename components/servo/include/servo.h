@@ -3,9 +3,10 @@
 #include <stdint.h>
 
 typedef enum {
-    SERVO_SCAN_LEFT = 0,
-    SERVO_SCAN_RIGHT,
-    SERVO_WATER_NOZZLE,
+    SERVO_SCAN_LEFT = 0,   // IR flame sensor – left side
+    SERVO_SCAN_RIGHT,      // IR flame sensor – right side
+    SERVO_FPV_PAN,         // FPV camera – horizontal (pan)
+    SERVO_FPV_TILT,        // FPV camera – vertical   (tilt)
     SERVO_COUNT
 } servo_id_t;
 

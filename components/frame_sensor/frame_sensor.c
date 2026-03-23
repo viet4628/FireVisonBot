@@ -30,6 +30,7 @@ static gpio_num_t flame_gpio_from_id(flame_sensor_id_t id)
 
 bool frame_sensor_is_fire_detected(flame_sensor_id_t id)
 {
+    /* Cảm biến mặc định xuất mức THẤP (0) khi phát hiện lửa, và CAO (1) khi bình thường. */
     return gpio_get_level(flame_gpio_from_id(id)) == 0;
 }
 
@@ -46,14 +47,21 @@ static void frame_sensor_monitor_task(void *arg)
     while (1) {
         bool left = frame_sensor_is_fire_detected(FLAME_SENSOR_LEFT);
         bool right = frame_sensor_is_fire_detected(FLAME_SENSOR_RIGHT);
+        int raw_L = gpio_get_level(FLAME_LEFT_GPIO);
+        int raw_R = gpio_get_level(FLAME_RIGHT_GPIO);
+
         if (left && right) {
-            ESP_LOGI(TAG, "FIRE: BOTH (left=%d right=%d)", left, right);
+            ESP_LOGI(TAG, "FIRE: BOTH (RAW: L=%d R=%d)", raw_L, raw_R);
         } else if (left) {
-            ESP_LOGI(TAG, "FIRE: LEFT (left=%d right=%d)", left, right);
+            ESP_LOGI(TAG, "FIRE: LEFT (RAW: L=%d R=%d)", raw_L, raw_R);
         } else if (right) {
-            ESP_LOGI(TAG, "FIRE: RIGHT (left=%d right=%d)", left, right);
+            ESP_LOGI(TAG, "FIRE: RIGHT (RAW: L=%d R=%d)", raw_L, raw_R);
         } else {
-            ESP_LOGI(TAG, "FIRE: NONE (left=%d right=%d)", left, right);
+            /* Khi không có lửa cũng in ra tín hiệu RAW mỗi 2 giây để dễ debug */
+            static int no_fire_count = 0;
+            if (++no_fire_count % 4 == 0) {
+                ESP_LOGI(TAG, "FIRE: NONE (RAW: L=%d R=%d)", raw_L, raw_R);
+            }
         }
         vTaskDelay(pdMS_TO_TICKS(period_ms));
     }

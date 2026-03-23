@@ -9,9 +9,12 @@
 #define SERVO_MIN_DEGREE        -15
 #define SERVO_MAX_DEGREE        180
 
+/* ---------- GPIO assignment ---------- */
 #define SERVO_SCAN_LEFT_GPIO    15
 #define SERVO_SCAN_RIGHT_GPIO   21
-#define SERVO_WATER_NOZZLE_GPIO 47
+#define SERVO_FPV_PAN_GPIO      38
+#define SERVO_FPV_TILT_GPIO     39
+
 #define SERVO_RESOLUTION_HZ     1000000
 #define SERVO_PERIOD            20000
 
@@ -36,18 +39,29 @@ static inline uint32_t angle_to_compare(float angle)
 static int servo_gpio_from_id(servo_id_t id)
 {
     switch (id) {
-        case SERVO_SCAN_LEFT: return SERVO_SCAN_LEFT_GPIO;
+        case SERVO_SCAN_LEFT:  return SERVO_SCAN_LEFT_GPIO;
         case SERVO_SCAN_RIGHT: return SERVO_SCAN_RIGHT_GPIO;
-        case SERVO_WATER_NOZZLE: return SERVO_WATER_NOZZLE_GPIO;
+        case SERVO_FPV_PAN:    return SERVO_FPV_PAN_GPIO;
+        case SERVO_FPV_TILT:   return SERVO_FPV_TILT_GPIO;
         default: return -1;
     }
 }
 
+/*
+ * ESP32-S3 has 2 MCPWM groups (0 and 1), each with 3 timers/operators.
+ * Distribute 4 servos across 2 groups, max 3 per group:
+ *   Group 0 : SCAN_LEFT, FPV_PAN     (2 units)
+ *   Group 1 : SCAN_RIGHT, FPV_TILT   (2 units)
+ */
 static int servo_group_from_id(servo_id_t id)
 {
-    // Most ESP32 targets provide MCPWM groups 0 and 1.
-    // Reuse valid groups instead of mapping one group per servo ID.
-    return (id == SERVO_WATER_NOZZLE) ? 0 : (int)id;
+    switch (id) {
+        case SERVO_SCAN_LEFT:  return 0;
+        case SERVO_SCAN_RIGHT: return 1;
+        case SERVO_FPV_PAN:    return 0;
+        case SERVO_FPV_TILT:   return 1;
+        default: return 0;
+    }
 }
 
 static void servo_init_one(servo_id_t id)
