@@ -23,8 +23,10 @@
 #include "relay.h"
 #include "driver/gpio.h"
 #include "esp_log.h"
-#include "wifi_ap.h" // Added by user instruction
+#include "wifi_ap.h" 
+#include "ai_vision.h"
 #include "freertos/FreeRTOS.h"
+#include <math.h>
 #include "freertos/task.h"
 
 static const char *TAG = "FIRE_CTRL";
@@ -93,9 +95,8 @@ static float mirror_angle(float angle, float min_a, float max_a)
 typedef enum {
     STATE_IDLE_SCAN,       /* Sleeping – scan servos sweep, looking for fire       */
     STATE_TURN_AROUND,     /* Right sensor triggered – rotate robot 180 deg to face fire */
-    STATE_FIRE_DETECTED,   /* IR confirmed fire – lock servo, compute direction    */
-    STATE_ORIENT_CAMERA,   /* Turn FPV camera toward fire direction                */
-    STATE_AI_VERIFY,       /* (Placeholder) ESP32-CAM AI fire verification         */
+    STATE_AI_SEARCH,       /* Sweep FPV Pan slowly to let AI verify fire           */
+    STATE_ALIGN_BODY,      /* Lock servos and rotate wheels to perfectly align car */
     STATE_APPROACH,        /* Drive toward fire, keep tracking with IR sensors     */
     STATE_EXTINGUISH,      /* Close enough – stop, activate water pump             */
 } robot_state_t;
@@ -125,13 +126,16 @@ static void fire_control_task(void *arg)
     /* State variables */
     robot_state_t state = STATE_IDLE_SCAN;
     float  target_angle  = 90.0f;
+    float  fpv_search_angle = 90.0f;
+    int    fpv_search_dir   = 1;
+    int    fpv_search_loops = 0;
     uint8_t left_streak  = 0;
     uint8_t right_streak = 0;
     const uint8_t CONFIRM_STREAK = 2;
 
     /* Camera center position (90° means straight ahead) */
     const float CAMERA_CENTER = 90.0f;
-    const float FPV_TILT_DEFAULT = 30.0f;
+    const float FPV_TILT_DEFAULT = 15.0f; // 15 độ: Ngã chúi về trước
     
     /* Vị trí gập nằm gọn lại khi không có lửa (Mặc định) */
     const float FPV_PAN_FOLDED = 90.0f;   /* Nằm thẳng chính giữa */
@@ -164,8 +168,11 @@ static void fire_control_task(void *arg)
                 vTaskDelay(LOCK_DELAY);
                 if (frame_sensor_is_fire_detected(FLAME_SENSOR_LEFT)) {
                     target_angle = servo_get_angle(SERVO_SCAN_LEFT);
-                    state = STATE_FIRE_DETECTED;
-                    ESP_LOGI(TAG, "Fire LOCKED from LEFT at %.1f deg", target_angle);
+                    state = STATE_AI_SEARCH;
+                    fpv_search_angle = 90.0f;
+                    fpv_search_dir = 1;
+                    fpv_search_loops = 0;
+                    ESP_LOGI(TAG, "IR LEFT detected fire! Starting AI SEARCH sweep...");
                 }
             } else if (frame_sensor_is_fire_detected(FLAME_SENSOR_RIGHT)) {
                 ESP_LOGI(TAG, "RIGHT sensor triggered, confirming...");
@@ -199,98 +206,97 @@ static void fire_control_task(void *arg)
             if (frame_sensor_is_fire_detected(FLAME_SENSOR_LEFT)) {
                 motor_stop();
                 target_angle = servo_get_angle(SERVO_SCAN_LEFT);
-                state = STATE_FIRE_DETECTED;
-                ESP_LOGI(TAG, "Turn complete. Fire LOCKED from LEFT at %.1f deg", target_angle);
+                state = STATE_AI_SEARCH;
+                fpv_search_angle = 90.0f;
+                fpv_search_dir = 1;
+                fpv_search_loops = 0;
+                ESP_LOGI(TAG, "Turn complete! Starting AI SEARCH sweep...");
             }
             break;
         }
 
         /* ────────────────────────────────────────────
-         * FIRE DETECTED – lock scan servo, prepare to orient camera
+         * AI SEARCH – sweep FPV pan until AI verifies the fire
          * ──────────────────────────────────────────── */
-        case STATE_FIRE_DETECTED: {
-            /* Lock both scan servos at fire direction */
-            servo_set_angle(SERVO_SCAN_LEFT,  target_angle);
-            servo_set_angle(SERVO_SCAN_RIGHT, mirror_angle(target_angle, SCAN_MIN, SCAN_MAX));
-
-            /* Start buzzer warning */
+        case STATE_AI_SEARCH: {
             buzzer_beep_tick(true);
+            servo_set_angle(SERVO_FPV_TILT, FPV_TILT_DEFAULT); // Ngẩng lên 30 độ nhìn thẳng lửa
+            servo_set_angle(SERVO_FPV_PAN, fpv_search_angle);
 
-            ESP_LOGI(TAG, "Orienting camera toward fire (target=%.1f deg)", target_angle);
-            state = STATE_ORIENT_CAMERA;
-            break;
-        }
+            // Quét tốc độ vừa phải để kiểm chứng
+            fpv_search_angle += fpv_search_dir * 1.5f; 
+            if (fpv_search_angle >= SCAN_MAX || fpv_search_angle <= SCAN_MIN) {
+                fpv_search_dir *= -1;
+                // Mỗi lần đập biên được tính là 1 mốc hoàn tất
+                if (fpv_search_angle <= SCAN_MIN || fpv_search_angle >= SCAN_MAX) {
+                    fpv_search_loops++;
+                }
+            }
 
-        /* ────────────────────────────────────────────
-         * ORIENT CAMERA – turn FPV servos to face fire direction
-         * If fire is NOT straight ahead (90°), first rotate robot body
-         * ──────────────────────────────────────────── */
-        case STATE_ORIENT_CAMERA: {
-            buzzer_beep_tick(true);
+            // Nếu quét 3 vòng (chạm biên 5-6 lần) mà không thấy -> Chắc chắn là báo động giả, huỷ bỏ tìm kiếm
+            if (fpv_search_loops >= 5) {
+                ESP_LOGW(TAG, "Camera quet 3 vong khong thay lua (False Alarm)! Ve lai radar...");
+                state = STATE_IDLE_SCAN;
+                break;
+            }
 
-            /*
-             * Point BOTH the pan (dưới) and tilt (trên) servos slowly toward their target angles.
+            /* --- THỰC THI AI VISION ---
+             * Chụp ảnh thực tế từ CAM, ép vào bộ xử lý TFLite và ném ra kết quả "KÊT NỐI TFLITE"
              */
-            float current_pan  = servo_get_angle(SERVO_FPV_PAN);
-            float current_tilt = servo_get_angle(SERVO_FPV_TILT);
-            
-            float diff_pan  = target_angle - current_pan;
-            float diff_tilt = FPV_TILT_DEFAULT - current_tilt;
-            
-            const float MOVE_STEP = 0.8f; /* Rất chậm và mượt (Chỉnh nhỏ lại nếu muốn chậm hơn) */
-            
-            bool pan_done = false;
-            bool tilt_done = false;
+            bool is_ai_verified = ai_vision_detect_fire();
 
-            /* Xoay ngang (Servo Dưới - Pan) */
-            if (diff_pan > MOVE_STEP) {
-                servo_set_angle(SERVO_FPV_PAN, current_pan + MOVE_STEP);
-            } else if (diff_pan < -MOVE_STEP) {
-                servo_set_angle(SERVO_FPV_PAN, current_pan - MOVE_STEP);
-            } else {
+            if (is_ai_verified) {
+                // Khóa servo ir + bộ FPV Servo ngay góc đó
+                target_angle = fpv_search_angle; 
+                ESP_LOGW(TAG, "🔥 AI XÁC NHẬN LỬA TẠI GÓC %.1f ĐỘ! KHÓA SERVO...", target_angle);
+                
+                servo_set_angle(SERVO_SCAN_LEFT, target_angle);
                 servo_set_angle(SERVO_FPV_PAN, target_angle);
-                pan_done = true;
-            }
+                vTaskDelay(pdMS_TO_TICKS(600)); // Khoá chặt lại mục tiêu
 
-            /* Xoay dọc (Servo Trên - Tilt) */
-            if (diff_tilt > MOVE_STEP) {
-                servo_set_angle(SERVO_FPV_TILT, current_tilt + MOVE_STEP);
-            } else if (diff_tilt < -MOVE_STEP) {
-                servo_set_angle(SERVO_FPV_TILT, current_tilt - MOVE_STEP);
-            } else {
-                servo_set_angle(SERVO_FPV_TILT, FPV_TILT_DEFAULT);
-                tilt_done = true;
-            }
-
-            /* Target reached for both axes */
-            if (pan_done && tilt_done) {
-                ESP_LOGI(TAG, "Camera oriented. Starting AI verification (placeholder)...");
-                state = STATE_AI_VERIFY;
+                ESP_LOGW(TAG, "💦 ĐANG BẬT VAN NƯỚC XỊT (3 GIÂY)...");
+                motor_stop();
+                relay_on();
+                vTaskDelay(pdMS_TO_TICKS(3000));
+                relay_off();
+                
+                ESP_LOGI(TAG, "✅ Hoàn tất dập lửa! Thu gọn Camera và về lại rada tuần tra.");
+                servo_set_angle(SERVO_FPV_PAN, FPV_PAN_FOLDED);
+                servo_set_angle(SERVO_FPV_TILT, FPV_TILT_FOLDED);
+                state = STATE_IDLE_SCAN;
             }
             break;
         }
 
         /* ────────────────────────────────────────────
-         * AI VERIFY – placeholder for ESP32-CAM fire verification
-         * TODO: receive frame from ESP32-CAM, run TFLite FOMO model
+         * ALIGN BODY – Xoay bánh xe tại chỗ thẳng hướng với gốc IR và Camera ban đầu
          * ──────────────────────────────────────────── */
-        case STATE_AI_VERIFY: {
+        case STATE_ALIGN_BODY: {
             buzzer_beep_tick(true);
 
-            /*
-             * === PLACEHOLDER ===
-             * When ESP32-CAM communication is ready:
-             *   1. Request a JPEG frame from ESP32-CAM
-             *   2. Run fire_model_int8.tflite on the frame
-             *   3. If fire detected  → STATE_APPROACH
-             *      If NOT fire       → STATE_IDLE_SCAN (false alarm)
-             *
-             * For now, auto-confirm fire and proceed.
-             */
-            ESP_LOGI(TAG, "AI verification PASSED (placeholder)");
-            state = STATE_APPROACH;
-            left_streak = 0;
-            right_streak = 0;
+            // Đưa thẳng servo IR Trái và Camera về gốc ban đầu (90 độ - thẳng hàng giữa đầu xe)
+            servo_set_angle(SERVO_SCAN_LEFT, CAMERA_CENTER);
+            servo_set_angle(SERVO_FPV_PAN, CAMERA_CENTER);
+
+            // Xoay bánh xe tại chỗ để xoay nguyên chiếc xe 
+            // Vị trí lúc AI thấy là target_angle. So với 90 độ, quyết định rẽ hướng nào:
+            if (target_angle > CAMERA_CENTER) {
+                // Lửa bên trái -> Tăng tốc xoay trái
+                motor_turn_left(TURN_DUTY);
+            } else {
+                motor_turn_right(TURN_DUTY);
+            }
+
+            // Dừng ngay lập tức khi Cảm biến IR Trái lúc này (đã bị khoá quay trở về 90 độ) chớp ĐƯỢC ngọn lửa!
+            // Nghĩa là ngọn lửa hiện nay đang nằm chính giữa, thẳng rịt với đầu xe!
+            if (frame_sensor_is_fire_detected(FLAME_SENSOR_LEFT)) {
+                motor_stop();
+                left_streak = 0;
+                right_streak = 0;
+                target_angle = CAMERA_CENTER; // Bây giờ target angle đã trùng với gốc
+                state = STATE_APPROACH;
+                ESP_LOGI(TAG, "Robot has perfectly aligned to face the fire! Approaching...");
+            }
             break;
         }
 
@@ -430,6 +436,9 @@ void app_main(void)
     /* Initialize WiFi Access Point for ESP32-CAM */
     ESP_LOGI(TAG, "Starting WiFi SoftAP...");
     wifi_init_softap();
+
+    /* Initialize AI Vision Subsystem */
+    ai_vision_init();
     
     /* Initialise all subsystems */
     motor_init();

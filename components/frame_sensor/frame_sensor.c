@@ -60,7 +60,7 @@ static void frame_sensor_monitor_task(void *arg)
             /* Khi không có lửa cũng in ra tín hiệu RAW mỗi 2 giây để dễ debug */
             static int no_fire_count = 0;
             if (++no_fire_count % 4 == 0) {
-                ESP_LOGI(TAG, "FIRE: NONE (RAW: L=%d R=%d)", raw_L, raw_R);
+                // ESP_LOGI(TAG, "FIRE: NONE (RAW: L=%d R=%d)", raw_L, raw_R);
             }
         }
         vTaskDelay(pdMS_TO_TICKS(period_ms));

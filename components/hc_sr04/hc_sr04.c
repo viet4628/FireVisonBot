@@ -137,7 +137,7 @@ static void hc_sr04_monitor_task(void *arg)
             if (distance > 0.0f &&
                 distance < DIST_THRESHOLD_CM &&
                 fabsf(distance - sensor.last_distance) > MIN_CHANGE_CM) {
-                ESP_LOGI(TAG, "🚨 Object detected: %.2f cm", distance);
+                // ESP_LOGI(TAG, "🚨 Object detected: %.2f cm", distance);
                 sensor.last_distance = distance;
             }
         }
