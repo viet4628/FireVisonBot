@@ -10,6 +10,10 @@ typedef enum {
     SERVO_COUNT
 } servo_id_t;
 
+/* Góc hợp lệ cho servo_set_angle (khớp servo.c). */
+#define SERVO_ANGLE_MIN  (-15.0f)
+#define SERVO_ANGLE_MAX  (180.0f)
+
 void servo_init(void);
 
 void servo_set_angle(servo_id_t id, float angle);

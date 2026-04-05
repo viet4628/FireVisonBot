@@ -1,65 +1,73 @@
 #include "motor.h"
+#include "board_hw.h"
 #include "driver/ledc.h"
 #include "driver/gpio.h"
+#include <stddef.h>
 
-// ===== GPIO CONFIG =====
-// Motor 1 = LEFT side  (2 DC motors in parallel)
-// Motor 2 = RIGHT side (2 DC motors in parallel)
-#define PWM_GPIO1    9
-#define RPWM_GPIO1   10
-#define LPWM_GPIO1   11
+#define PWM_GPIO1    BOARD_GPIO_MOTOR_PWM_LEFT
+#define RPWM_GPIO1   BOARD_GPIO_MOTOR_RPWM_LEFT
+#define LPWM_GPIO1   BOARD_GPIO_MOTOR_LPWM_LEFT
+#define PWM_GPIO2    BOARD_GPIO_MOTOR_PWM_RIGHT
+#define RPWM_GPIO2   BOARD_GPIO_MOTOR_RPWM_RIGHT
+#define LPWM_GPIO2   BOARD_GPIO_MOTOR_LPWM_RIGHT
 
-#define PWM_GPIO2    14
-#define RPWM_GPIO2   12
-#define LPWM_GPIO2   13
+#define LEDC_FREQ       BOARD_MOTOR_LEDC_FREQ_HZ
+#define LEDC_RESOLUTION BOARD_MOTOR_LEDC_TIMER_BITS
+#define DUTY_MAX        BOARD_MOTOR_DUTY_MAX
 
-// ===== PWM CONFIG =====
-#define LEDC_FREQ       5000
-#define LEDC_RESOLUTION LEDC_TIMER_10_BIT
-#define DUTY_MAX        ((1 << LEDC_RESOLUTION) - 1)
+#define MOTOR_TIMER     BOARD_MOTOR_LEDC_TIMER
+#define MOTOR1_CHANNEL  BOARD_MOTOR_LEDC_CH_LEFT
+#define MOTOR2_CHANNEL  BOARD_MOTOR_LEDC_CH_RIGHT
 
-#define MOTOR1_CHANNEL  LEDC_CHANNEL_0
-#define MOTOR2_CHANNEL  LEDC_CHANNEL_1
+static void motor_set_all_pins_drive_strong(void)
+{
+    const gpio_num_t pins[] = {
+        PWM_GPIO1, RPWM_GPIO1, LPWM_GPIO1,
+        PWM_GPIO2, RPWM_GPIO2, LPWM_GPIO2,
+    };
+    for (size_t i = 0; i < sizeof(pins) / sizeof(pins[0]); i++) {
+        gpio_set_drive_capability(pins[i], GPIO_DRIVE_CAP_3);
+    }
+}
 
 void motor_init(void)
 {
-    // Timer PWM
     ledc_timer_config_t ledc_timer = {
         .speed_mode      = LEDC_LOW_SPEED_MODE,
         .duty_resolution = LEDC_RESOLUTION,
-        .timer_num       = LEDC_TIMER_0,
+        .timer_num       = MOTOR_TIMER,
         .freq_hz         = LEDC_FREQ,
         .clk_cfg         = LEDC_AUTO_CLK
     };
     ledc_timer_config(&ledc_timer);
 
-    // Motor 1 (LEFT)
     ledc_channel_config_t ch1 = {
         .gpio_num   = PWM_GPIO1,
         .speed_mode = LEDC_LOW_SPEED_MODE,
         .channel    = MOTOR1_CHANNEL,
-        .timer_sel  = LEDC_TIMER_0,
+        .timer_sel  = MOTOR_TIMER,
         .duty       = 0,
         .hpoint     = 0,
+        .intr_type  = LEDC_INTR_DISABLE,
     };
     ledc_channel_config(&ch1);
 
-    // Motor 2 (RIGHT)
     ledc_channel_config_t ch2 = {
         .gpio_num   = PWM_GPIO2,
         .speed_mode = LEDC_LOW_SPEED_MODE,
         .channel    = MOTOR2_CHANNEL,
-        .timer_sel  = LEDC_TIMER_0,
+        .timer_sel  = MOTOR_TIMER,
         .duty       = 0,
         .hpoint     = 0,
+        .intr_type  = LEDC_INTR_DISABLE,
     };
     ledc_channel_config(&ch2);
 
-    // Direction pins
     gpio_set_direction(RPWM_GPIO1, GPIO_MODE_OUTPUT);
     gpio_set_direction(LPWM_GPIO1, GPIO_MODE_OUTPUT);
     gpio_set_direction(RPWM_GPIO2, GPIO_MODE_OUTPUT);
     gpio_set_direction(LPWM_GPIO2, GPIO_MODE_OUTPUT);
+    motor_set_all_pins_drive_strong();
 
     motor_stop();
 }
@@ -94,14 +102,13 @@ void motor_backward(uint32_t duty)
     ledc_update_duty(LEDC_LOW_SPEED_MODE, MOTOR2_CHANNEL);
 }
 
-/* Quay tại chỗ sang trái: bên trái lùi, bên phải tiến */
 void motor_turn_left(uint32_t duty)
 {
     if (duty > DUTY_MAX) duty = DUTY_MAX;
 
-    gpio_set_level(RPWM_GPIO1, 0);  // LEFT backward
+    gpio_set_level(RPWM_GPIO1, 0);
     gpio_set_level(LPWM_GPIO1, 1);
-    gpio_set_level(RPWM_GPIO2, 1);  // RIGHT forward
+    gpio_set_level(RPWM_GPIO2, 1);
     gpio_set_level(LPWM_GPIO2, 0);
 
     ledc_set_duty(LEDC_LOW_SPEED_MODE, MOTOR1_CHANNEL, duty);
@@ -110,14 +117,13 @@ void motor_turn_left(uint32_t duty)
     ledc_update_duty(LEDC_LOW_SPEED_MODE, MOTOR2_CHANNEL);
 }
 
-/* Quay tại chỗ sang phải: bên trái tiến, bên phải lùi */
 void motor_turn_right(uint32_t duty)
 {
     if (duty > DUTY_MAX) duty = DUTY_MAX;
 
-    gpio_set_level(RPWM_GPIO1, 1);  // LEFT forward
+    gpio_set_level(RPWM_GPIO1, 1);
     gpio_set_level(LPWM_GPIO1, 0);
-    gpio_set_level(RPWM_GPIO2, 0);  // RIGHT backward
+    gpio_set_level(RPWM_GPIO2, 0);
     gpio_set_level(LPWM_GPIO2, 1);
 
     ledc_set_duty(LEDC_LOW_SPEED_MODE, MOTOR1_CHANNEL, duty);

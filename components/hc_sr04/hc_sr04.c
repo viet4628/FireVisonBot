@@ -4,6 +4,7 @@
 #include <math.h>
 #include <stdbool.h>
 
+#include "board_hw.h"
 #include "driver/gpio.h"
 #include "driver/mcpwm_cap.h"
 #include "esp_log.h"
@@ -12,8 +13,8 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
-#define HC_SR04_TRIG_GPIO  GPIO_NUM_5
-#define HC_SR04_ECHO_GPIO  GPIO_NUM_18
+#define HC_SR04_TRIG_GPIO  BOARD_GPIO_SR04_TRIG
+#define HC_SR04_ECHO_GPIO  BOARD_GPIO_SR04_ECHO
 
 #define DIST_THRESHOLD_CM  30.0f
 #define MIN_CHANGE_CM      1.0f
@@ -127,6 +128,8 @@ static void hc_sr04_monitor_task(void *arg)
             float pulse_width_us = tof_ticks * (1000000.0f / esp_clk_apb_freq());
 
             if (pulse_width_us > 35000.0f) {
+                /* Xa / nhiễu — không giữ khoảng cách cũ để app coi là không đo được. */
+                sensor.latest_distance = 0.0f;
                 vTaskDelay(pdMS_TO_TICKS(period_ms));
                 continue;
             }
@@ -140,6 +143,9 @@ static void hc_sr04_monitor_task(void *arg)
                 // ESP_LOGI(TAG, "🚨 Object detected: %.2f cm", distance);
                 sensor.last_distance = distance;
             }
+        } else {
+            /* Hết thời chờ echo — tránh tuần tra kẹt vì giá trị latest_distance cũ. */
+            sensor.latest_distance = 0.0f;
         }
 
         sensor.waiting_task = NULL;

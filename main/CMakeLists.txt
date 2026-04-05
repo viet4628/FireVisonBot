@@ -1,5 +1,25 @@
 idf_component_register(
-	SRCS "app_main.c" "wifi_ap.c"
-	INCLUDE_DIRS "."
-	REQUIRES motor servo frame_sensor hc_sr04 relay esp_wifi nvs_flash lwip ai_vision
+    SRCS
+        "app_main.c"
+        "wifi_station.c"
+        "robot_state.c"
+        "telemetry_http.c"
+    INCLUDE_DIRS
+        "."
+    REQUIRES
+        board_hw
+        esp_system
+        esp_timer
+        esp_wifi
+        esp_event
+        esp_netif
+        nvs_flash
+        freertos
+        driver
+        motor
+        servo
+        frame_sensor
+        hc_sr04
+        relay
+        esp_http_server
 )

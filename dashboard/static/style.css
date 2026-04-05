@@ -1,0 +1,287 @@
+:root {
+  --bg: #0e1117;
+  --surface: #161b22;
+  --border: #30363d;
+  --text: #e6edf3;
+  --muted: #8b949e;
+  --accent: #f78166;
+  --ok: #3fb950;
+  --warn: #d29922;
+  --bad: #f85149;
+  --mono: "JetBrains Mono", "Consolas", monospace;
+  font-family: "Segoe UI", system-ui, sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.45;
+  min-height: 100vh;
+}
+
+.top {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 1.25rem 1.75rem;
+  border-bottom: 1px solid var(--border);
+  background: linear-gradient(180deg, #13171f 0%, var(--bg) 100%);
+}
+
+.top h1 {
+  margin: 0;
+  font-size: 1.35rem;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+
+.sub {
+  margin: 0.2rem 0 0;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.status-pill {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--bad);
+}
+.dot.on {
+  background: var(--ok);
+  box-shadow: 0 0 8px var(--ok);
+}
+
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.75rem 1.75rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.btn {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 0.45rem 0.9rem;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.88rem;
+}
+.btn:hover {
+  border-color: var(--muted);
+}
+.btn.primary {
+  background: #238636;
+  border-color: #2ea043;
+}
+
+.badge {
+  font-size: 0.78rem;
+  color: var(--muted);
+  font-family: var(--mono);
+}
+
+/* Khung video ~ đúng 640px ngang (VGA): tránh kéo giãn toàn màn hình → mờ */
+.video-stage {
+  max-width: 680px;
+  margin: 0 auto;
+  padding: 1rem 1.75rem;
+}
+
+.panel-video .video-wrap {
+  aspect-ratio: 4 / 3;
+  max-width: 640px;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+.panel {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 1rem 1.1rem;
+}
+
+.panel h2 {
+  margin: 0 0 0.35rem;
+  font-size: 1rem;
+}
+
+.hint {
+  margin: 0 0 0.75rem;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.video-wrap {
+  background: #000;
+  border-radius: 6px;
+  overflow: hidden;
+  aspect-ratio: 4 / 3;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.video-wrap img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  /* Ảnh chụp/JPEG: auto scale mượt; độ nét chủ yếu nhờ khung ~640px (không phóng to quá VGA). */
+  image-rendering: auto;
+}
+
+@supports (image-rendering: high-quality) {
+  .video-wrap img {
+    image-rendering: high-quality;
+  }
+}
+
+.metrics {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem;
+  padding: 0 1.75rem 1rem;
+}
+
+@media (max-width: 900px) {
+  .metrics {
+    grid-template-columns: 1fr;
+  }
+}
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 1rem;
+}
+
+.card h3 {
+  margin: 0 0 0.75rem;
+  font-size: 0.95rem;
+}
+
+.kv {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  font-size: 0.88rem;
+}
+
+.kv li {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.35rem 0;
+  border-bottom: 1px solid var(--border);
+}
+.kv li:last-child {
+  border-bottom: none;
+}
+
+.kv span {
+  color: var(--muted);
+}
+.kv em {
+  font-style: normal;
+  font-family: var(--mono);
+  color: var(--accent);
+}
+
+.boxes {
+  margin: 0.75rem 0 0;
+  padding: 0.6rem;
+  background: var(--bg);
+  border-radius: 6px;
+  font-size: 0.72rem;
+  max-height: 9rem;
+  overflow: auto;
+  font-family: var(--mono);
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.log-panel {
+  margin: 0 1.75rem 1.5rem;
+}
+
+.log-out {
+  margin: 0;
+  height: 14rem;
+  overflow: auto;
+  padding: 0.75rem;
+  background: #050608;
+  border-radius: 6px;
+  font-family: var(--mono);
+  font-size: 0.75rem;
+  color: #7ee787;
+  border: 1px solid var(--border);
+}
+
+.dlg {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 0;
+  background: var(--surface);
+  color: var(--text);
+  max-width: 32rem;
+  width: calc(100% - 2rem);
+}
+.dlg::backdrop {
+  background: rgba(0, 0, 0, 0.65);
+}
+
+.dlg h2 {
+  margin: 0 0 1rem;
+  font-size: 1.1rem;
+}
+
+.dlg label {
+  display: block;
+  font-size: 0.82rem;
+  color: var(--muted);
+  margin-bottom: 0.75rem;
+}
+
+.dlg input {
+  display: block;
+  width: 100%;
+  margin-top: 0.35rem;
+  padding: 0.45rem 0.5rem;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 0.85rem;
+}
+
+.dlg-actions {
+  display: flex;
+  gap: 0.5rem;
+  justify-content: flex-end;
+  margin: 1rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.model-path code {
+  color: var(--accent);
+  font-size: 0.78rem;
+}

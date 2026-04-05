@@ -1,12 +1,13 @@
 #include "frame_sensor.h"
 
+#include "board_hw.h"
 #include "driver/gpio.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
-#define FLAME_LEFT_GPIO  GPIO_NUM_4
-#define FLAME_RIGHT_GPIO GPIO_NUM_6
+#define FLAME_LEFT_GPIO  BOARD_GPIO_FLAME_LEFT
+#define FLAME_RIGHT_GPIO BOARD_GPIO_FLAME_RIGHT
 
 static const char *TAG = "FLAME";
 static bool monitor_started = false;
@@ -81,7 +82,7 @@ void frame_sensor_start_monitoring(uint32_t period_ms)
     xTaskCreate(
         frame_sensor_monitor_task,
         "frame_sensor",
-        2048,
+        8192,
         (void *)(uintptr_t)period_ms,
         5,
         NULL

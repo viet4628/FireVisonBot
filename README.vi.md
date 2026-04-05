@@ -54,10 +54,10 @@ IDLE_SCAN → FIRE_DETECTED → ORIENT_CAMERA → AI_VERIFY → APPROACH → EXT
 
 | Chức năng | GPIO | Ghi chú |
 | --- | --- | --- |
-| Scan Left (IR trái) | 15 | MCPWM Group 0 |
-| Scan Right (IR phải) | 21 | MCPWM Group 1 |
-| FPV Pan (Servo Dưới - Xoay Ngang) | 38 | MCPWM Group 0 |
-| FPV Tilt (Servo Trên - Xoay Dọc) | 39 | MCPWM Group 1 |
+| Scan Left (IR trái) | 15 | LEDC (`servo.c`) |
+| Scan Right (IR phải) | 7 | LEDC (`servo.c`) |
+| FPV Pan (Servo dưới) | 38 | LEDC (`servo.c`) |
+| FPV Tilt (Servo trên) | 39 | LEDC (`servo.c`) |
 
 ### Cảm Biến Lửa IR (`components/frame_sensor/frame_sensor.c`)
 
@@ -108,6 +108,107 @@ idf.py -p /dev/ttyUSB0 flash monitor
 
 Thay `/dev/ttyUSB0` bằng cổng serial của bạn (Windows: `COM3`, `COM4`, ...).
 
+## Dashboard — chạy Backend (BE) và giao diện (UI)
+
+Backend là **FastAPI** ([`dashboard/main.py`](dashboard/main.py)): chạy YOLO trên **máy tính (laptop)**, đọc luồng MJPEG từ ESP32-CAM, poll JSON telemetry từ ESP32-S3, phát MJPEG đã vẽ box qua `/ai_feed`. Giao diện web nằm trong `dashboard/templates/` + `dashboard/static/` và được phục vụ cùng cổng với BE.
+
+### Yêu cầu (máy chạy dashboard)
+
+- **Python 3.10+** (khuyến nghị 3.11)
+- **PyTorch** sẽ được kéo theo qua gói `ultralytics` (lần đầu cài có thể lâu)
+- File model mặc định: [`models/yolo_best.pt`](models/README.md) — đặt file `.pt` vào thư mục `models/` (xem `models/README.md`)
+
+### Bước 1 — Môi trường Python
+
+**Windows (PowerShell), từ thư mục gốc repo:**
+
+```powershell
+cd dashboard
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -U pip
+pip install -r requirements.txt
+```
+
+**Linux / macOS:**
+
+```bash
+cd dashboard
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -U pip
+pip install -r requirements.txt
+```
+
+### Bước 2 — Chạy backend (BE)
+
+Vẫn trong thư mục `dashboard/` (đã kích hoạt venv):
+
+```bash
+uvicorn main:app --host 0.0.0.0 --port 8765
+```
+
+Hoặc:
+
+```bash
+python main.py
+```
+
+- BE lắng nghe **`0.0.0.0:8765`** (máy khác trong LAN truy cập được qua IP laptop).
+- Log trong terminal: stream MJPEG, YOLO, lỗi kết nối telemetry.
+
+### Bước 3 — Mở UI (trình duyệt)
+
+Trên chính máy chạy BE:
+
+- Mở: **http://localhost:8765**
+
+Từ điện thoại / máy khác cùng WiFi:
+
+- `http://IP-máy-tính:8765` (ví dụ `http://192.168.1.50:8765`)
+
+UI gồm cấu hình URL stream, URL telemetry robot, xem video `/ai_feed`, log và sensor (qua WebSocket).
+
+### Bước 4 — Cấu hình trong UI (sau khi mở trang)
+
+1. **URL luồng camera (MJPEG)** — thường là ESP32-CAM, dạng `http://IP-CAM:81/stream` (tùy sketch; tham khảo [`components/camera/camera.ino`](components/camera/camera.ino)).
+2. **URL telemetry ESP32-S3** — phải là **IP thật của ESP32-S3**, không dùng IP gateway (`.1`), dạng `http://IP-S3:8080/api/status` (cổng/path đúng theo firmware `telemetry_http` của bạn).
+
+Lưu cấu hình trên form UI (gọi `POST /api/config`) rồi kiểm tra log panel nếu stream/robot vẫn offline.
+
+### Gợi ý xử lý sự cố nhanh
+
+| Hiện tượng | Gợi ý |
+| --- | --- |
+| `ModuleNotFoundError` | Chạy lại `pip install -r requirements.txt` trong đúng venv. |
+| UI không mở được | Kiểm tra firewall Windows có chặn cổng **8765**; thử `http://127.0.0.1:8765`. |
+| Không có hình / YOLO không chạy | Kiểm tra `models/yolo_best.pt` tồn tại; stream URL đúng và CAM đang bật. |
+| Robot “Offline” | Điền đúng `http://IP-S3:8080/api/status`; laptop và S3 cùng mạng. |
+
+### API tham khảo (BE)
+
+- `GET /` — trang dashboard (UI)
+- `GET /ai_feed` — MJPEG đã vẽ detection
+- `GET` / `POST /api/config` — đọc/ghi cấu hình stream, robot, YOLO
+- `GET /api/robot` — proxy một lần tới telemetry S3
+- `WebSocket /ws` — log + sensor + detection realtime
+
+### Logic relay trên xe (ESP32-S3) + camera
+
+- **IR phải** (ổn định): **khóa servo tại góc đang quét** → **quay bánh ~180°** → vào trạng thái chờ (IR trái / camera).
+- **Relay bơm**: chỉ **BẬT** khi **IR trái có lửa** và **độ tin cậy camera (YOLO) ≥ 65%** trong cửa sổ ~1,5s gần nhất.
+- Dashboard (laptop) **POST** `{"confidence":0.0…1.0}` lên S3: `POST http://<IP-S3>:8080/api/ai_fire` (mặc định cấu hình trong `dashboard/main.py`). Telemetry `GET /api/status` có thêm `ai_confidence`, `ai_fresh_above_65`.
+
+### Script demo OpenCV (không cần trình duyệt)
+
+Từ gốc repo, sau khi cài `ultralytics`, `opencv-python`, `numpy`:
+
+```bash
+python scripts/yolo_mjpeg_viewer.py
+```
+
+Chỉnh `stream_url` trong file cho đúng IP ESP32-CAM; model đọc từ `models/yolo_best.pt`.
+
 ## Cấu Trúc Dự Án
 
 ```text
@@ -137,9 +238,13 @@ FireVisonBot/
 │       ├── CMakeLists.txt
 │       ├── include/relay.h
 │       └── relay.c              ← Water pump relay driver
-├── trained_model/
-│   ├── fire_model_int8.tflite   ← AI model cho ESP32-S3
-│   └── fire_model_data.h        ← Model as C header
+│   └── camera/
+│       └── camera.ino           ← Sketch ESP32-CAM (stream MJPEG, tham khảo)
+├── dashboard/                   ← BE (FastAPI) + UI web — xem mục Dashboard
+├── models/                      ← Đặt yolo_best.pt tại đây (xem models/README.md)
+├── scripts/
+│   └── yolo_mjpeg_viewer.py     ← Demo YOLO + MJPEG qua OpenCV
+├── trained_model/               ← (nếu có) model nhúng ESP32
 └── sdkconfig
 ```
 

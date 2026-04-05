@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>FireVisonBot — Giám sát</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <header class="top">
+    <div>
+      <h1>FireVisonBot</h1>
+      <p class="sub">YOLO trên laptop · ESP32-CAM chỉ cấp MJPEG nội bộ · telemetry S3</p>
+    </div>
+    <div class="status-pill">
+      <span id="ws-dot" class="dot off"></span>
+      <span id="ws-label">WebSocket</span>
+    </div>
+  </header>
+
+  <section class="toolbar">
+    <button type="button" id="btn-settings" class="btn">Cấu hình URL camera / YOLO</button>
+    <span id="model-badge" class="badge"></span>
+  </section>
+
+  <main class="video-stage">
+    <article class="panel panel-video">
+      <h2>Luồng nhận diện (YOLO)</h2>
+      <p class="hint">Backend đọc MJPEG như <code>scripts/yolo_mjpeg_viewer.py</code>, suy luận rồi phát <code>/ai_feed</code>.</p>
+      <div class="video-wrap">
+        <img id="ai-stream" src="/ai_feed" alt="YOLO" />
+      </div>
+    </article>
+  </main>
+
+  <section class="metrics">
+    <div class="card">
+      <h3>ESP32-S3 — cảm biến</h3>
+      <ul class="kv" id="sensor-kv">
+        <li><span>Trạng thái</span><em id="s-ok">—</em></li>
+        <li><span>IR trái</span><em id="s-fl">—</em></li>
+        <li><span>IR phải</span><em id="s-fr">—</em></li>
+        <li><span>HC-SR04 (cm)</span><em id="s-dist">—</em></li>
+        <li><span>Relay bơm</span><em id="s-relay">—</em></li>
+        <li><span>FSM</span><em id="s-state">—</em></li>
+        <li><span>Uptime MCU (ms)</span><em id="s-up">—</em></li>
+        <li><span>AI conf (S3)</span><em id="s-aic">—</em></li>
+        <li><span>AI &gt;65% còn hạn</span><em id="s-aio">—</em></li>
+      </ul>
+    </div>
+    <div class="card">
+      <h3>YOLO — lần chạy gần nhất</h3>
+      <ul class="kv">
+        <li><span>Độ trễ</span><em id="d-lat">—</em></li>
+        <li><span>Số box</span><em id="d-n">—</em></li>
+      </ul>
+      <pre class="boxes" id="d-boxes"></pre>
+    </div>
+  </section>
+
+  <section class="panel log-panel">
+    <h2>Nhật ký</h2>
+    <pre id="log-out" class="log-out"></pre>
+  </section>
+
+  <dialog id="dlg" class="dlg">
+    <form id="cfg-form">
+      <h2>Cấu hình</h2>
+      <label>URL MJPEG từ ESP32-CAM (chỉ backend dùng)<input type="url" id="f-stream" required placeholder="http://192.168.137.203:81/stream" /></label>
+      <label>URL telemetry ESP32-S3 (IP của S3 trong serial monitor, không dùng .1)<input type="url" id="f-robot" placeholder="http://192.168.137.60:8080/api/status" /></label>
+      <label>URL POST độ tin cậy YOLO → S3 (relay + IR trái)<input type="url" id="f-aipush" placeholder="http://192.168.137.60:8080/api/ai_fire" /></label>
+      <label>YOLO imgsz<input type="number" id="f-imgsz" min="160" max="1280" step="32" /></label>
+      <label>YOLO conf<input type="number" id="f-conf" min="0.05" max="0.95" step="0.05" /></label>
+      <label>Chu kỳ suy luận (s)<input type="number" id="f-inf" min="0.05" step="0.01" /></label>
+      <label>Poll robot (s)<input type="number" id="f-poll" min="0.2" step="0.1" /></label>
+      <label>Timeout HTTP → S3 (s, tránh báo lỗi khi WiFi chậm)<input type="number" id="f-rtout" min="3" max="60" step="1" /></label>
+      <label>Chất lượng JPEG luồng AI (60–98)<input type="number" id="f-aiq" min="60" max="98" step="1" title="Cao hơn = nét hơn, tải nặng hơn" /></label>
+      <p class="hint model-path">Model: <code id="f-model-path"></code></p>
+      <menu class="dlg-actions">
+        <button type="submit" class="btn primary">Lưu &amp; nối lại MJPEG</button>
+        <button type="button" class="btn" id="btn-close">Đóng</button>
+      </menu>
+    </form>
+  </dialog>
+
+  <script>
+    window.__BOOT__ = {
+      robotUrl: {{ default_robot_url | tojson }},
+      modelPath: {{ model_path | tojson }},
+    };
+  </script>
+  <script src="/static/app.js"></script>
+</body>
+</html>

@@ -1,10 +1,10 @@
 #include "relay.h"
+#include "board_hw.h"
 #include "driver/gpio.h"
 #include "esp_log.h"
 
-#define RELAY_GPIO     GPIO_NUM_17
-/* Set to 1 for active-HIGH relay module, 0 for active-LOW */
-#define RELAY_ON_LEVEL 1
+#define RELAY_GPIO     BOARD_GPIO_RELAY
+#define RELAY_ON_LEVEL BOARD_RELAY_ON_LEVEL
 
 static const char *TAG = "RELAY";
 static bool relay_state = false;
