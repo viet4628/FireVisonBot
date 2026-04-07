@@ -139,6 +139,11 @@ def _esp_http_timeout() -> httpx.Timeout:
     return httpx.Timeout(connect=2.0, read=t, write=2.0, pool=2.0)
 
 
+def _cam_http_timeout() -> httpx.Timeout:
+    # Endpoint /camera/on|off phải phản hồi nhanh; timeout ngắn để không kéo dài vòng điều khiển.
+    return httpx.Timeout(connect=1.2, read=1.5, write=1.2, pool=1.2)
+
+
 def _fmt_robot_poll_error(exc: BaseException) -> str:
     base = str(exc)
     low = base.lower()
@@ -173,6 +178,11 @@ MAX_LOG = 400
 
 inf_thread: threading.Thread | None = None
 robot_thread: threading.Thread | None = None
+cam_ctl_thread: threading.Thread | None = None
+cam_ctl_lock = threading.Lock()
+cam_target_active: bool | None = None
+cam_last_ctl_fail_ts: float = 0.0
+cam_last_ctl_fail_reason: str = ""
 
 
 def _log(line: str) -> None:
@@ -293,7 +303,7 @@ def _cam_control_url(path: str) -> str:
 
 
 def _set_cam_stream_active(enable: bool) -> None:
-    global stream_reader, cam_stream_active
+    global stream_reader, cam_stream_active, cam_last_ctl_fail_ts, cam_last_ctl_fail_reason
     if enable == cam_stream_active:
         return
 
@@ -302,8 +312,8 @@ def _set_cam_stream_active(enable: bool) -> None:
     if n_ws:
         _log(f"Lệnh camera qua WebSocket → {n_ws} client")
 
-    # Cho firmware kịp bật/tắt sensor trước khi laptop mở MJPEG.
-    time.sleep(0.12)
+    # Cho firmware kịp xử lý bật/tắt trước khi laptop mở MJPEG.
+    time.sleep(0.18)
 
     control_ok = n_ws > 0
     base = (cfg.cam_control_base_url or "").strip()
@@ -311,13 +321,26 @@ def _set_cam_stream_active(enable: bool) -> None:
     if not control_ok and base:
         path = "/camera/on" if enable else "/camera/off"
         try:
-            with httpx.Client(timeout=_esp_http_timeout()) as client:
-                r = client.post(_cam_control_url(path))
-                r.raise_for_status()
+            with httpx.Client(timeout=_cam_http_timeout()) as client:
+                # Firmware mới: POST /camera/on|off
+                try:
+                    r = client.post(_cam_control_url(path))
+                    r.raise_for_status()
+                except httpx.HTTPStatusError as exc:
+                    # Một số firmware có thể expose dạng GET; thử thêm 1 lần để dễ tương thích.
+                    if exc.response is not None and exc.response.status_code in (404, 405):
+                        r2 = client.get(_cam_control_url(path))
+                        r2.raise_for_status()
+                    else:
+                        raise
             control_ok = True
             _log(f"Lệnh camera qua HTTP {path} OK")
+            cam_last_ctl_fail_ts = 0.0
+            cam_last_ctl_fail_reason = ""
         except Exception as exc:
             _log(f"Lỗi gửi lệnh camera {path}: {exc}")
+            cam_last_ctl_fail_ts = time.monotonic()
+            cam_last_ctl_fail_reason = str(exc)
             if cfg.cam_control_strict:
                 return
             _log(
@@ -335,7 +358,8 @@ def _set_cam_stream_active(enable: bool) -> None:
             stream_reader.stop()
             stream_reader = None
         if enable:
-            time.sleep(0.15)
+            # ESP32-CAM cần warm-up ngắn sau /camera/on để giảm timeout/10054.
+            time.sleep(0.65)
             su = (cfg.stream_url or "").strip()
             if su:
                 stream_reader = MjpegStreamReader(su).start()
@@ -346,6 +370,38 @@ def _set_cam_stream_active(enable: bool) -> None:
         _log("ESP32-CAM: STREAM ON" if control_ok else "ESP32-CAM: STREAM ON (fallback)")
     else:
         _log("ESP32-CAM: STREAM OFF" if control_ok else "ESP32-CAM: STREAM OFF (fallback)")
+
+
+def _request_cam_stream_active(enable: bool) -> None:
+    """Yêu cầu bật/tắt camera bất đồng bộ, không chặn telemetry poll."""
+    global cam_target_active
+    with cam_ctl_lock:
+        cam_target_active = enable
+
+
+def _camera_control_worker() -> None:
+    global cam_target_active, cam_last_ctl_fail_ts, cam_last_ctl_fail_reason
+    _log("Worker CAM ctl: chạy.")
+    while not worker_stop.is_set():
+        # Backoff khi lỗi điều khiển CAM (tránh spam log + tránh block CPU).
+        if cam_last_ctl_fail_ts and (time.monotonic() - cam_last_ctl_fail_ts) < 2.0:
+            time.sleep(0.1)
+            continue
+        target: bool | None = None
+        with cam_ctl_lock:
+            if cam_target_active is not None and cam_target_active != cam_stream_active:
+                target = cam_target_active
+                # Xóa yêu cầu hiện tại; nếu có yêu cầu mới trong lúc xử lý sẽ được ghi đè lần sau.
+                cam_target_active = None
+        if target is not None:
+            try:
+                _set_cam_stream_active(target)
+            except Exception as exc:
+                # _set_cam_stream_active vốn nuốt lỗi, nhưng để chắc: vẫn backoff.
+                cam_last_ctl_fail_ts = time.monotonic()
+                cam_last_ctl_fail_reason = str(exc)
+            continue
+        time.sleep(0.05)
 
 
 _ai_push_err_log_ts: float = 0.0
@@ -479,9 +535,9 @@ def _robot_poll_worker():
                 if fire_any:
                     last_fire_seen_ts = now
                     if not cam_stream_active:
-                        _set_cam_stream_active(True)
+                        _request_cam_stream_active(True)
                 elif cam_stream_active and (now - last_fire_seen_ts) >= cfg.cam_auto_off_delay_s:
-                    _set_cam_stream_active(False)
+                    _request_cam_stream_active(False)
         except Exception as exc:
             payload = {"_ok": False, "error": _fmt_robot_poll_error(exc)}
             if main_loop and main_loop.is_running():
@@ -494,7 +550,7 @@ def _robot_poll_worker():
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    global main_loop, model, inf_thread, robot_thread
+    global main_loop, model, inf_thread, robot_thread, cam_ctl_thread
 
     main_loop = asyncio.get_running_loop()
     worker_stop.clear()
@@ -509,10 +565,12 @@ async def lifespan(_app: FastAPI):
 
     inf_thread = threading.Thread(target=_inference_worker, daemon=True)
     robot_thread = threading.Thread(target=_robot_poll_worker, daemon=True)
+    cam_ctl_thread = threading.Thread(target=_camera_control_worker, daemon=True)
     inf_thread.start()
     robot_thread.start()
+    cam_ctl_thread.start()
     # Khởi động ở trạng thái nghỉ: camera tắt, chỉ bật khi S3 báo có lửa.
-    _set_cam_stream_active(False)
+    _request_cam_stream_active(False)
 
     yield
 
@@ -522,7 +580,7 @@ async def lifespan(_app: FastAPI):
         if stream_reader is not None:
             stream_reader.stop()
             stream_reader = None
-    _set_cam_stream_active(False)
+    _request_cam_stream_active(False)
 
 
 app = FastAPI(title="FireVisonBot Dashboard", lifespan=lifespan)
@@ -563,7 +621,8 @@ async def ai_feed():
             + jpg
             + b"\r\n"
         )
-        await asyncio.sleep(0.04)
+        # Giảm tải encode + bớt giật UI: phát khoảng ~12.5 FPS là đủ theo nhịp inference.
+        await asyncio.sleep(0.08)
 
 
 @app.get("/ai_feed")
@@ -640,7 +699,10 @@ async def websocket_endpoint(ws: WebSocket):
             boot = {"type": "log_bulk", "lines": list(log_lines[-80:])}
         await ws.send_text(json.dumps(boot, ensure_ascii=False))
         while True:
-            await ws.receive()
+            try:
+                await ws.receive()
+            except RuntimeError:
+                break
     except WebSocketDisconnect:
         pass
     finally:
@@ -658,7 +720,10 @@ async def websocket_cam_endpoint(ws: WebSocket):
     await cam_hub.register(ws)
     try:
         while True:
-            await ws.receive()
+            try:
+                await ws.receive()
+            except RuntimeError:
+                break
     except WebSocketDisconnect:
         pass
     finally:

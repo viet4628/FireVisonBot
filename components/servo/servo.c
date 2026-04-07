@@ -5,6 +5,7 @@
 #include "freertos/task.h"
 #include "esp_log.h"
 #include <stdbool.h>
+#include <math.h>
 
 #define SERVO_MIN_PULSEWIDTH_US 500
 #define SERVO_MAX_PULSEWIDTH_US 2500
@@ -83,11 +84,24 @@ void servo_set_angle(servo_id_t id, float angle)
 {
     if (id < 0 || id >= SERVO_COUNT || !servos[id].initialized) return;
 
+    // Chống spam bộ đệm PWM gây nhiễu: nếu góc không thay đổi đáng kể, bỏ qua cập nhật
+    if (fabsf(servos[id].current_angle - angle) < 0.2f) return;
+
     uint32_t duty = angle_to_duty(angle);
     ledc_set_duty(LEDC_LOW_SPEED_MODE, servos[id].channel, duty);
     ledc_update_duty(LEDC_LOW_SPEED_MODE, servos[id].channel);
 
     servos[id].current_angle = angle;
+}
+
+void servo_detach(servo_id_t id)
+{
+    if (id < 0 || id >= SERVO_COUNT || !servos[id].initialized) return;
+
+    ledc_set_duty(LEDC_LOW_SPEED_MODE, servos[id].channel, 0);
+    ledc_update_duty(LEDC_LOW_SPEED_MODE, servos[id].channel);
+
+    servos[id].current_angle = -999.0f; // Force update next time
 }
 
 float servo_get_angle(servo_id_t id)

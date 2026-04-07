@@ -80,12 +80,11 @@ static void buzzer_beep_tick(bool active) {
 #define USE_RIGHT_FLAME_IR     1
 #endif
 
-/* FPV: một góc cố định, không căn theo lửa (xoay xe thay vì xoay camera). */
-#define FPV_PAN_LOCK           FPV_PAN_CENTER
-#define FPV_TILT_LOCK          FPV_TILT_DEFAULT
-
-#define FPV_PAN_CENTER         90.f
-#define FPV_TILT_DEFAULT       82.f
+/* FPV servo dưới (PAN) — servo 180° thường
+ * - Servo trên (TILT): để chết cứng, KHÔNG điều khiển.
+ * - Servo dưới (PAN): mặc định 90°, có lửa -> bám theo góc servo IR trái.
+ *//* Dịch góc nghỉ một chút tránh mòn chiết áp ở 90 độ gây nhiễu cơ học tự dao động */
+#define FPV_BOTTOM_IDLE_DEG    92.f
 
 /* ───────── HC-SR04: vật cản khi xe chạy (histerezis) ───────── */
 #define SR04_STOP_CM           28.f
@@ -110,30 +109,55 @@ static void buzzer_beep_tick(bool active) {
 /** Xoay nhẹ bánh khi IR trái xác nhận (ms), 0 = tắt. Canh hướng thay vì xoay FPV. */
 #define LEFT_FIRE_PIVOT_MS     0u
 
-/**
- * Căn IR trái về NOZZLE_ALIGN_TARGET_DEG: motor + servo từng bước (servo bước lớn = chỉnh nhanh).
- * err>0 → trái tiến phải lùi; err<0 → phải tiến trái lùi.
- */
-#define ALIGN_SERVO_STEP_DEG      2.8f
-#define ALIGN_MOTOR_PULSE_MS      115u
-#define ALIGN_MAX_STEPS           200
-#define LEFT_IR_ALIGN_EPS_DEG     2.0f
-
 /** Số vòng lặp liên tiếp (mỗi ~20ms) có IR báo lửa mới coi là xác nhận — tránh nhiễu và tránh quét servo ghi đè. */
 #define IR_FIRE_STABLE_LOOPS   14
-
 #define LOST_FIRE_MS           3000
+
+/* Bù góc xoay lố (15-20 độ) khi servo FPV bám theo góc của IR phải */
+#define RIGHT_IR_FPV_OFFSET_DEG 10.0f
 
 typedef enum {
     STATE_PATROL,
-    STATE_SPIN_180,
-    STATE_ALIGN_LEFT_NOZZLE,
     STATE_EXTINGUISH,
 } robot_state_t;
 
-static void fpv_lock_fixed(void) {
-    servo_set_angle(SERVO_FPV_PAN, FPV_PAN_LOCK);
-    servo_set_angle(SERVO_FPV_TILT, FPV_TILT_LOCK);
+static void fpv_set_idle(void) {
+    // Servo trên (TILT): để chết cứng — không điều khiển.
+    // Lọc nhiễu: tránh gọi hàm cập nhật liên tục mỗi 30ms khi robot đang quét không có lửa
+    static TickType_t fpv_idle_start_tick = 0;
+    float current_angle = servo_get_angle(SERVO_FPV_PAN);
+
+    if (current_angle < -100.0f) {
+        return; // Đã cắt PWM thì giữ im thả lỏng servo
+    }
+
+    if (fabsf(FPV_BOTTOM_IDLE_DEG - current_angle) > 3.0f) {
+        servo_set_angle(SERVO_FPV_PAN, FPV_BOTTOM_IDLE_DEG);
+        fpv_idle_start_tick = xTaskGetTickCount();
+    } else {
+        // Nếu đã lùi về tới góc Idle được 500ms, ta cắt toàn bộ xung PWM để servo nghỉ không giật
+        if (fpv_idle_start_tick != 0 && (xTaskGetTickCount() - fpv_idle_start_tick) > pdMS_TO_TICKS(100)) {
+            servo_detach(SERVO_FPV_PAN);
+            fpv_idle_start_tick = 0;
+        }
+    }
+}
+
+static void fpv_set_fire_track(float scan_left_deg) {
+    // Quay servo FPV cùng góc thực tế với servo IR trái (có thể trước đó bị ngược).
+    float follow = scan_left_deg;
+    if (follow < SERVO_ANGLE_MIN) {
+        follow = SERVO_ANGLE_MIN;
+    }
+    if (follow > SERVO_ANGLE_MAX) {
+        follow = SERVO_ANGLE_MAX;
+    }
+    // Servo trên (TILT): để chết cứng — không điều khiển.
+    // Lọc nhiễu: chỉ cập nhật góc khi mức dao động góc mới vượt ngưỡng 2.5 độ để tránh giật
+    float current_angle = servo_get_angle(SERVO_FPV_PAN);
+    if (fabsf(follow - current_angle) > 3.0f) {
+        servo_set_angle(SERVO_FPV_PAN, follow);
+    }
 }
 
 /**
@@ -170,7 +194,7 @@ static void peripheral_idle_sweep_opposite(float *aL, float *aR, int *dir) {
 
     servo_set_angle(SERVO_SCAN_LEFT, *aL);
     servo_set_angle(SERVO_SCAN_RIGHT, *aR);
-    fpv_lock_fixed();
+    fpv_set_idle();
 }
 
 static void read_flame_inputs(bool *out_l, bool *out_r) {
@@ -185,7 +209,7 @@ static void read_flame_inputs(bool *out_l, bool *out_r) {
 static void servos_reset_neutral(void) {
     servo_set_angle(SERVO_SCAN_LEFT, ANGLE_CENTER);
     servo_set_angle(SERVO_SCAN_RIGHT, ANGLE_CENTER);
-    fpv_lock_fixed();
+    fpv_set_idle();
 }
 
 /** Lưu góc thực tế đang ra lệnh cho 2 servo quét — khóa đúng tư thế lúc IR xác nhận, không nhảy về góc cứng. */
@@ -197,7 +221,6 @@ static void capture_scan_hold(float *hold_L, float *hold_R) {
 static void apply_scan_hold(float hold_L, float hold_R) {
     servo_set_angle(SERVO_SCAN_LEFT, hold_L);
     servo_set_angle(SERVO_SCAN_RIGHT, hold_R);
-    fpv_lock_fixed();
 }
 
 static void fire_control_task(void *arg) {
@@ -217,7 +240,6 @@ static void fire_control_task(void *arg) {
     bool path_blocked = false;
     unsigned fire_stable_loops = 0;
     TickType_t lost_fire_since_tick = 0;
-    uint16_t align_iterate_steps = 0;
 
     ESP_LOGI(TAG, "Patrol: drive=%d | IR phải=%d | relay+cam>=%.0f%% | IR ổn định %u",
              PATROL_ENABLE_DRIVE, USE_RIGHT_FLAME_IR,
@@ -265,7 +287,9 @@ static void fire_control_task(void *arg) {
                 robot_state_set_idle_scan();
 
                 if (fire_l || fire_r) {
-                    fpv_lock_fixed();
+                    // Chỉ mới thấy lửa tức thời (có thể nhiễu): giữ FPV ở idle.
+                    // Chuyển sang track thật sự sau khi vượt IR_FIRE_STABLE_LOOPS.
+                    fpv_set_idle();
                     fire_stable_loops++;
                     motor_stop();
                     /* Không gọi peripheral_idle_sweep khi đang có lửa / đang đếm ổn định — tránh kéo servo khỏi góc khóa */
@@ -275,6 +299,7 @@ static void fire_control_task(void *arg) {
                         if (fire_l && fire_r) {
                             capture_scan_hold(&hold_scan_L, &hold_scan_R);
                             apply_scan_hold(hold_scan_L, hold_scan_R);
+                            fpv_set_fire_track((hold_scan_L + hold_scan_R) / 2.0f);
                             ESP_LOGW(TAG, "IR cả hai — khóa góc từng servo tại chỗ nhận (L=%.1f R=%.1f).",
                                      hold_scan_L, hold_scan_R);
                             state = STATE_EXTINGUISH;
@@ -286,26 +311,23 @@ static void fire_control_task(void *arg) {
                         if (fire_r && !fire_l) {
                             capture_scan_hold(&hold_scan_L, &hold_scan_R);
                             apply_scan_hold(hold_scan_L, hold_scan_R);
-                            ESP_LOGW(TAG, "IR phải (trái tắt) — khóa L=%.1f R=%.1f → SPIN_180.",
+                            fpv_set_fire_track(hold_scan_R + RIGHT_IR_FPV_OFFSET_DEG);
+                            ESP_LOGW(TAG, "IR phải (trái tắt) — khóa L=%.1f R=%.1f → sang STATE_EXTINGUISH.",
                                      hold_scan_L, hold_scan_R);
-                            state = STATE_SPIN_180;
+                            state = STATE_EXTINGUISH;
+                            robot_state_set_extinguish();
                             break;
                         }
 #endif
-                        /* IR trái (đã loại cả hai và chỉ-phải): khóa góc → căn bánh đưa servo L về 90° (vòi). */
+                        /* IR trái (đã loại cả hai và chỉ-phải): thay vì căn bánh, vào thẳng EXTINGUISH để khóa góc */
                         if (fire_l) {
-#if LEFT_FIRE_PIVOT_MS > 0
-                            motor_turn_left(SPIN_DUTY);
-                            vTaskDelay(pdMS_TO_TICKS(LEFT_FIRE_PIVOT_MS));
-                            motor_stop();
-                            vTaskDelay(pdMS_TO_TICKS(80));
-#endif
                             capture_scan_hold(&hold_scan_L, &hold_scan_R);
                             apply_scan_hold(hold_scan_L, hold_scan_R);
-                            ESP_LOGW(TAG, "IR trái — khóa L=%.1f R=%.1f → căn L → %.0f° (motor+servo từng bước).",
-                                     hold_scan_L, hold_scan_R, (double)NOZZLE_ALIGN_TARGET_DEG);
-                            align_iterate_steps = 0;
-                            state = STATE_ALIGN_LEFT_NOZZLE;
+                            fpv_set_fire_track(hold_scan_L);
+                            ESP_LOGW(TAG, "IR trái — khóa L=%.1f R=%.1f → sang STATE_EXTINGUISH.",
+                                     hold_scan_L, hold_scan_R);
+                            state = STATE_EXTINGUISH;
+                            robot_state_set_extinguish();
                             break;
                         }
                     }
@@ -331,105 +353,9 @@ static void fire_control_task(void *arg) {
                 }
                 break;
 
-            case STATE_SPIN_180:
-#if !USE_RIGHT_FLAME_IR
-                scan_angle_L = scan_angle_R = ANGLE_CENTER;
-                sweep_dir = 1;
-                servos_reset_neutral();
-                state = STATE_PATROL;
-                fire_stable_loops = 0;
-                break;
-#else
-                robot_state_set_idle_scan();
-                apply_scan_hold(hold_scan_L, hold_scan_R);
-                fpv_lock_fixed();
-                motor_turn_right(SPIN_DUTY);
-                vTaskDelay(pdMS_TO_TICKS(SPIN_180_MS));
-                motor_stop();
-                vTaskDelay(pdMS_TO_TICKS(200));
 
-                read_flame_inputs(&fire_l, &fire_r);
-                if (fire_l && fire_r) {
-                    capture_scan_hold(&hold_scan_L, &hold_scan_R);
-                    apply_scan_hold(hold_scan_L, hold_scan_R);
-                    state = STATE_EXTINGUISH;
-                    robot_state_set_extinguish();
-                    lost_fire_since_tick = 0;
-                } else if (fire_l) {
-                    capture_scan_hold(&hold_scan_L, &hold_scan_R);
-                    apply_scan_hold(hold_scan_L, hold_scan_R);
-                    state = STATE_EXTINGUISH;
-                    robot_state_set_extinguish();
-                    lost_fire_since_tick = 0;
-                } else if (fire_r) {
-                    capture_scan_hold(&hold_scan_L, &hold_scan_R);
-                    apply_scan_hold(hold_scan_L, hold_scan_R);
-                    state = STATE_EXTINGUISH;
-                    robot_state_set_extinguish();
-                    lost_fire_since_tick = 0;
-                } else {
-                    scan_angle_L = scan_angle_R = ANGLE_CENTER;
-                    sweep_dir = 1;
-                    servos_reset_neutral();
-                    state = STATE_PATROL;
-                    fire_stable_loops = 0;
-                }
-                break;
-#endif
 
-            case STATE_ALIGN_LEFT_NOZZLE: {
-                const float tgt = NOZZLE_ALIGN_TARGET_DEG;
-                float err = hold_scan_L - tgt;
 
-                robot_state_set_extinguish();
-                fpv_lock_fixed();
-
-                if (fabsf(err) <= LEFT_IR_ALIGN_EPS_DEG) {
-                    hold_scan_L = tgt;
-                    apply_scan_hold(hold_scan_L, hold_scan_R);
-                    align_iterate_steps = 0;
-                    state = STATE_EXTINGUISH;
-                    robot_state_set_extinguish();
-                    ESP_LOGI(TAG, "Căn IR trái: đạt %.0f° (±%.1f°)", (double)tgt,
-                             (double)LEFT_IR_ALIGN_EPS_DEG);
-                    break;
-                }
-                if (align_iterate_steps >= ALIGN_MAX_STEPS) {
-                    hold_scan_L = tgt;
-                    apply_scan_hold(hold_scan_L, hold_scan_R);
-                    align_iterate_steps = 0;
-                    state = STATE_EXTINGUISH;
-                    robot_state_set_extinguish();
-                    ESP_LOGW(TAG, "Căn IR trái: hết bước tối đa → gán L=%.0f°", (double)tgt);
-                    break;
-                }
-
-                align_iterate_steps++;
-                /* err>0: lửa bên phải → trái tiến phải lùi; err<0: lửa bên trái → phải tiến trái lùi */
-                if (err > 0.f) {
-                    motor_turn_right(ALIGN_SPIN_DUTY);
-                } else {
-                    motor_turn_left(ALIGN_SPIN_DUTY);
-                }
-                vTaskDelay(pdMS_TO_TICKS(ALIGN_MOTOR_PULSE_MS));
-                motor_stop();
-                vTaskDelay(pdMS_TO_TICKS(25));
-
-                const float step = ALIGN_SERVO_STEP_DEG;
-                if (err < 0.f) {
-                    hold_scan_L += step;
-                    if (hold_scan_L > tgt) {
-                        hold_scan_L = tgt;
-                    }
-                } else {
-                    hold_scan_L -= step;
-                    if (hold_scan_L < tgt) {
-                        hold_scan_L = tgt;
-                    }
-                }
-                apply_scan_hold(hold_scan_L, hold_scan_R);
-                break;
-            }
 
             case STATE_EXTINGUISH:
                 motor_stop();
@@ -440,8 +366,15 @@ static void fire_control_task(void *arg) {
                     bool cam_ok = robot_state_ai_camera_fresh_ok(RELAY_MIN_CAMERA_CONF);
 
                     apply_scan_hold(hold_scan_L, hold_scan_R);
+                    if (fire_r && !fire_l) {
+                        fpv_set_fire_track(hold_scan_R + RIGHT_IR_FPV_OFFSET_DEG);
+                    } else if (fire_l && fire_r) {
+                        fpv_set_fire_track((hold_scan_L + hold_scan_R) / 2.0f);
+                    } else {
+                        fpv_set_fire_track(hold_scan_L);
+                    }
 
-                    if (fire_l && cam_ok) {
+                    if ((fire_l || fire_r) && cam_ok) {
                         relay_on();
                     } else {
                         relay_off();

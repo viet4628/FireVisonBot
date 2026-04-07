@@ -5,6 +5,7 @@ from __future__ import annotations
 import threading
 import time
 import urllib.request
+import urllib.error
 
 import cv2
 import numpy as np
@@ -18,6 +19,8 @@ class MjpegStreamReader:
         self._frame = None
         self._running = True
         self._lock = threading.Lock()
+        self._stream = None
+        self._err_ts = 0.0
 
     def start(self) -> MjpegStreamReader:
         threading.Thread(target=self._loop, daemon=True).start()
@@ -25,6 +28,12 @@ class MjpegStreamReader:
 
     def stop(self) -> None:
         self._running = False
+        s = self._stream
+        if s is not None:
+            try:
+                s.close()
+            except Exception:
+                pass
 
     def read(self):
         with self._lock:
@@ -38,6 +47,7 @@ class MjpegStreamReader:
             had_error = False
             try:
                 stream = urllib.request.urlopen(self.url, timeout=3)
+                self._stream = stream
                 buf = b""
                 # Chunk lớn + buffer lớn: JPEG VGA/SVGA chất lượng cao >150KB;
                 # cắt buffer quá sớm làm mất EOI → imdecode vỡ khối / mosaic.
@@ -64,8 +74,16 @@ class MjpegStreamReader:
                         buf = b""
             except Exception as exc:
                 had_error = True
-                print(f"[stream] Chập chờn, đang nối lại... ({exc})")
+                # Nếu camera đang tắt: /stream trả 503 (stream_disabled) — không spam log.
+                quiet = False
+                if isinstance(exc, urllib.error.HTTPError) and exc.code == 503:
+                    quiet = True
+                now = time.monotonic()
+                if not quiet and (now - self._err_ts) >= 2.0:
+                    self._err_ts = now
+                    print(f"[stream] Chập chờn, đang nối lại... ({exc})")
             finally:
+                self._stream = None
                 if stream is not None:
                     try:
                         stream.close()
@@ -73,4 +91,5 @@ class MjpegStreamReader:
                         pass
             if not self._running:
                 break
-            time.sleep(1.0 if had_error else 0.15)
+            # Nếu lỗi 503 do camera tắt, nghỉ lâu hơn để đỡ tốn CPU.
+            time.sleep(1.4 if had_error else 0.15)

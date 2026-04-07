@@ -22,5 +22,8 @@ float servo_get_angle(servo_id_t id);
 // Keep old API for backward compatibility (maps to SERVO_SCAN_LEFT).
 void servo_set_primary_angle(float angle);
 
+// Ngắt thẳng xung PWM cho Servo tự nghỉ
+void servo_detach(servo_id_t id);
+
 // Optional sweep test for two scan servos.
 void servo_sweep_start(void);

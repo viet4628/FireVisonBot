@@ -1,15 +1,15 @@
 {
   "stream_url": "http://192.168.137.27:81/stream",
   "robot_status_url": "http://192.168.137.208:8080/api/status",
-  "cam_control_base_url": "http://192.168.137.27:81",
-  "cam_control_strict": false,
-  "yolo_imgsz": 416,
+  "cam_control_base_url": "http://192.168.137.27:82",
+  "cam_control_strict": true,
+  "yolo_imgsz": 352,
   "yolo_conf": 0.45,
   "infer_interval_s": 0.12,
   "robot_poll_s": 0.4,
   "robot_http_timeout_s": 12.0,
   "cam_auto_off_delay_s": 3.5,
-  "ai_feed_jpeg_quality": 95,
+  "ai_feed_jpeg_quality": 88,
   "robot_ai_push_url": "http://192.168.137.208:8080/api/ai_fire",
   "cam_ws_token": ""
 }

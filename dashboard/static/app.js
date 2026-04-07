@@ -9,6 +9,7 @@
   const cfgForm = document.getElementById("cfg-form");
   const modelBadge = document.getElementById("model-badge");
   const aiStream = document.getElementById("ai-stream");
+  let lastSensorsAtMs = 0;
 
   function appendLog(line) {
     logOut.textContent += line + "\n";
@@ -27,6 +28,7 @@
     const relay = document.getElementById("s-relay");
     const state = document.getElementById("s-state");
     const up = document.getElementById("s-up");
+    const rx = document.getElementById("s-rx");
 
     if (!data._ok) {
       ok.textContent = data.error ? String(data.error) : "Offline / lỗi";
@@ -40,8 +42,10 @@
       const aio = document.getElementById("s-aio");
       if (aic) aic.textContent = "—";
       if (aio) aio.textContent = "—";
+      if (rx) rx.textContent = "mất kết nối";
       return;
     }
+    lastSensorsAtMs = Date.now();
     ok.textContent = "OK";
     ok.style.whiteSpace = "normal";
     ok.style.textAlign = "";
@@ -72,7 +76,16 @@
       aio.style.color =
         data.ai_fresh_above_65 === true ? "var(--ok)" : "var(--muted)";
     }
+    if (rx) rx.textContent = "vừa xong";
   }
+
+  setInterval(() => {
+    const rx = document.getElementById("s-rx");
+    if (!rx || !lastSensorsAtMs) return;
+    const dt = Date.now() - lastSensorsAtMs;
+    rx.textContent = dt < 1000 ? `${dt} ms trước` : `${(dt / 1000).toFixed(1)} s trước`;
+    rx.style.color = dt > 3000 ? "var(--bad)" : "var(--muted)";
+  }, 250);
 
   function setDetection(meta) {
     document.getElementById("d-lat").textContent =

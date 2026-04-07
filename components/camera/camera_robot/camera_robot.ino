@@ -61,6 +61,8 @@ static bool g_stream_enabled = false;
 #define CAM_FRAME_SIZE   FRAMESIZE_VGA
 #define CAM_JPEG_Q_PSRAM 13
 #define CAM_JPEG_Q_NO_PSRAM 15
+// 0 = chỉ chặn stream logic (ổn định hơn); 1 = dùng PWDN tắt cứng camera.
+#define CAM_USE_HARD_PWDN 0
 
 static void configure_camera_quality(sensor_t *s) {
   s->set_brightness(s, 0);
@@ -138,10 +140,14 @@ static esp_err_t stream_handler(httpd_req_t *req) {
 }
 
 static void set_camera_active(bool on) {
-  sensor_t *s = esp_camera_sensor_get();
-  if (s) {
-    s->set_sleep(s, on ? 0 : 1);
+  // Một số core/camera bị rớt kết nối nếu toggle PWDN liên tục khi dashboard đang reconnect.
+  // Mặc định giữ camera "awake", chỉ khóa stream bằng g_stream_enabled cho ổn định.
+#if CAM_USE_HARD_PWDN
+  if (PWDN_GPIO_NUM >= 0) {
+    pinMode(PWDN_GPIO_NUM, OUTPUT);
+    digitalWrite(PWDN_GPIO_NUM, on ? LOW : HIGH);
   }
+#endif
   g_stream_enabled = on;
 }
 
