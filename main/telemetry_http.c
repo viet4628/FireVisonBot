@@ -5,12 +5,14 @@
 #include "esp_http_server.h"
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "driver/gpio.h"
 
 #include "telemetry_http.h"
 #include "robot_state.h"
 #include "frame_sensor.h"
 #include "hc_sr04.h"
 #include "relay.h"
+#include "board_hw.h"
 
 static const char *TAG = "TELEM_HTTP";
 static httpd_handle_t s_server = NULL;
@@ -94,6 +96,8 @@ static esp_err_t api_ai_fire_post(httpd_req_t *req)
 
 static esp_err_t api_status_get(httpd_req_t *req)
 {
+    int raw_flame_l = gpio_get_level(BOARD_GPIO_FLAME_LEFT);
+    int raw_flame_r = gpio_get_level(BOARD_GPIO_FLAME_RIGHT);
     bool flame_l = frame_sensor_is_fire_detected(FLAME_SENSOR_LEFT);
     bool flame_r = frame_sensor_is_fire_detected(FLAME_SENSOR_RIGHT);
     float dist = hc_sr04_get_last_distance_cm();
@@ -105,15 +109,18 @@ static esp_err_t api_status_get(httpd_req_t *req)
     long ai_age = robot_state_ai_camera_age_ms();
     bool ai_ok_65 = robot_state_ai_camera_fresh_ok(ROBOT_STATE_AI_RELAY_MIN_CONF);
 
-    char body[420];
+    char body[520];
     int n = snprintf(body, sizeof(body),
                      "{\"flame_left\":%s,\"flame_right\":%s,"
+                     "\"flame_raw_left\":%d,\"flame_raw_right\":%d,"
                      "\"distance_cm\":%.2f,\"relay_on\":%s,"
                      "\"state\":\"%s\",\"uptime_ms\":%lld,"
                      "\"ai_confidence\":%.4f,\"ai_age_ms\":%ld,"
                      "\"ai_fresh_above_65\":%s}",
                      flame_l ? "true" : "false",
                      flame_r ? "true" : "false",
+                     raw_flame_l,
+                     raw_flame_r,
                      dist,
                      relay ? "true" : "false",
                      st,

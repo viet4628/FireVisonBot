@@ -31,8 +31,12 @@ static gpio_num_t flame_gpio_from_id(flame_sensor_id_t id)
 
 bool frame_sensor_is_fire_detected(flame_sensor_id_t id)
 {
-    /* Cảm biến mặc định xuất mức THẤP (0) khi phát hiện lửa, và CAO (1) khi bình thường. */
-    return gpio_get_level(flame_gpio_from_id(id)) == 0;
+    int lvl = gpio_get_level(flame_gpio_from_id(id));
+#if BOARD_FLAME_ACTIVE_LOW
+    return lvl == 0;
+#else
+    return lvl == 1;
+#endif
 }
 
 bool frame_sensor_any_fire_detected(void)

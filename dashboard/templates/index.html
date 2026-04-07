@@ -66,9 +66,9 @@
   <dialog id="dlg" class="dlg">
     <form id="cfg-form">
       <h2>Cấu hình</h2>
-      <label>URL MJPEG từ ESP32-CAM (chỉ backend dùng)<input type="url" id="f-stream" required placeholder="http://192.168.137.203:81/stream" /></label>
-      <label>URL telemetry ESP32-S3 (IP của S3 trong serial monitor, không dùng .1)<input type="url" id="f-robot" placeholder="http://192.168.137.60:8080/api/status" /></label>
-      <label>URL POST độ tin cậy YOLO → S3 (relay + IR trái)<input type="url" id="f-aipush" placeholder="http://192.168.137.60:8080/api/ai_fire" /></label>
+      <label>URL MJPEG từ ESP32-CAM (chỉ backend dùng)<input type="url" id="f-stream" required placeholder="http://192.168.137.108:81/stream" /></label>
+      <label>URL telemetry ESP32-S3 (IP của S3 trong serial monitor, không dùng .1)<input type="url" id="f-robot" placeholder="http://192.168.137.71:8080/api/status" /></label>
+      <label>URL POST độ tin cậy YOLO → S3 (relay + IR trái)<input type="url" id="f-aipush" placeholder="http://192.168.137.71:8080/api/ai_fire" /></label>
       <label>YOLO imgsz<input type="number" id="f-imgsz" min="160" max="1280" step="32" /></label>
       <label>YOLO conf<input type="number" id="f-conf" min="0.05" max="0.95" step="0.05" /></label>
       <label>Chu kỳ suy luận (s)<input type="number" id="f-inf" min="0.05" step="0.01" /></label>

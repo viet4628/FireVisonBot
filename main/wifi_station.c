@@ -99,6 +99,14 @@ void wifi_init_station(void)
 
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
+    /*
+     * Giảm độ trễ telemetry: tắt Wi‑Fi power save (mặc định modem sleep có thể làm TCP/HTTP
+     * bị “giật” theo chu kỳ, nhìn như delay vài giây trên dashboard).
+     */
+    esp_err_t ps = esp_wifi_set_ps(WIFI_PS_NONE);
+    if (ps != ESP_OK) {
+        ESP_LOGW(TAG, "esp_wifi_set_ps(WIFI_PS_NONE) lỗi: %s", esp_err_to_name(ps));
+    }
     ESP_ERROR_CHECK(esp_wifi_start());
 
     ESP_LOGI(TAG, "Đang kết nối STA tới SSID=%s (laptop làm AP)", WIFI_SSID);

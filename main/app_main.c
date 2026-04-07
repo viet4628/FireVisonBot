@@ -104,6 +104,8 @@ static void buzzer_beep_tick(bool active) {
 #define PATROL_DUTY            1023u
 #define SPIN_DUTY              1023u
 #define SPIN_180_MS            1400u
+/* Giảm riêng tốc độ lúc căn hướng (tăng lại nhẹ theo yêu cầu). */
+#define ALIGN_SPIN_DUTY        820u
 
 /** Xoay nhẹ bánh khi IR trái xác nhận (ms), 0 = tắt. Canh hướng thay vì xoay FPV. */
 #define LEFT_FIRE_PIVOT_MS     0u
@@ -405,9 +407,9 @@ static void fire_control_task(void *arg) {
                 align_iterate_steps++;
                 /* err>0: lửa bên phải → trái tiến phải lùi; err<0: lửa bên trái → phải tiến trái lùi */
                 if (err > 0.f) {
-                    motor_turn_right(SPIN_DUTY);
+                    motor_turn_right(ALIGN_SPIN_DUTY);
                 } else {
-                    motor_turn_left(SPIN_DUTY);
+                    motor_turn_left(ALIGN_SPIN_DUTY);
                 }
                 vTaskDelay(pdMS_TO_TICKS(ALIGN_MOTOR_PULSE_MS));
                 motor_stop();

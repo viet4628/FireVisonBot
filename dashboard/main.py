@@ -33,29 +33,110 @@ from stream_reader import MjpegStreamReader
 BASE_DIR = Path(__file__).resolve().parent
 REPO_ROOT = BASE_DIR.parent
 DEFAULT_MODEL = REPO_ROOT / "models" / "yolo_best.pt"
+CONFIG_PATH = REPO_ROOT / "config" / "system_config.json"
 
 
 class RuntimeConfig:
-    stream_url: str = "http://192.168.137.203:81/stream"
+    stream_url: str = "http://192.168.137.108:81/stream"
+    # Base URL ESP32-CAM để bật/tắt stream theo sự kiện lửa.
+    cam_control_base_url: str = "http://192.168.137.108:81"
+    # Nếu false: khi /camera/on lỗi vẫn thử đọc /stream (hỗ trợ firmware CAM cũ chưa có API control).
+    cam_control_strict: bool = False
     # IP ESP32-S3 (đổi khi DHCP cấp IP khác). Không dùng .1 (gateway laptop).
-    robot_status_url: str = "http://192.168.137.60:8080/api/status"
+    robot_status_url: str = "http://192.168.137.71:8080/api/status"
     yolo_imgsz: int = 416
     yolo_conf: float = 0.45
     infer_interval_s: float = 0.12
     robot_poll_s: float = 0.4
     # Timeout HTTP tới ESP32-S3 (s). Quá ngắn dễ thấy "timeout" dù IP đúng.
     robot_http_timeout_s: float = 12.0
+    # Sau khi không còn tín hiệu lửa từ S3 trong khoảng này thì tắt camera để tiết kiệm pin.
+    cam_auto_off_delay_s: float = 3.5
     ai_feed_jpeg_quality: int = 95  # /ai_feed MJPEG (60–98, cao = nét hơn trên dashboard)
     # Đẩy độ tin cậy YOLO (0…1) lên ESP32-S3 để bật relay khi kết hợp IR trái + >= 65%.
-    robot_ai_push_url: str = "http://192.168.137.60:8080/api/ai_fire"
+    robot_ai_push_url: str = "http://192.168.137.71:8080/api/ai_fire"
+    # Tùy chọn: nếu khác rỗng, ESP32-CAM phải nối ws://host:port/ws/cam?token=...
+    cam_ws_token: str = ""
 
 
 cfg = RuntimeConfig()
 
 
+def _cfg_to_dict() -> dict[str, Any]:
+    return {
+        "stream_url": cfg.stream_url,
+        "robot_status_url": cfg.robot_status_url,
+        "cam_control_base_url": cfg.cam_control_base_url,
+        "cam_control_strict": cfg.cam_control_strict,
+        "yolo_imgsz": cfg.yolo_imgsz,
+        "yolo_conf": cfg.yolo_conf,
+        "infer_interval_s": cfg.infer_interval_s,
+        "robot_poll_s": cfg.robot_poll_s,
+        "robot_http_timeout_s": cfg.robot_http_timeout_s,
+        "cam_auto_off_delay_s": cfg.cam_auto_off_delay_s,
+        "ai_feed_jpeg_quality": cfg.ai_feed_jpeg_quality,
+        "robot_ai_push_url": cfg.robot_ai_push_url,
+        "cam_ws_token": cfg.cam_ws_token,
+    }
+
+
+def _cfg_apply_dict(data: dict[str, Any]) -> None:
+    if "stream_url" in data:
+        cfg.stream_url = str(data["stream_url"])
+    if "robot_status_url" in data:
+        cfg.robot_status_url = str(data["robot_status_url"])
+    if "cam_control_base_url" in data:
+        cfg.cam_control_base_url = str(data["cam_control_base_url"])
+    if "cam_control_strict" in data:
+        cfg.cam_control_strict = bool(data["cam_control_strict"])
+    if "yolo_imgsz" in data:
+        cfg.yolo_imgsz = int(data["yolo_imgsz"])
+    if "yolo_conf" in data:
+        cfg.yolo_conf = float(data["yolo_conf"])
+    if "infer_interval_s" in data:
+        cfg.infer_interval_s = float(data["infer_interval_s"])
+    if "robot_poll_s" in data:
+        cfg.robot_poll_s = float(data["robot_poll_s"])
+    if "robot_http_timeout_s" in data:
+        cfg.robot_http_timeout_s = max(3.0, float(data["robot_http_timeout_s"]))
+    if "cam_auto_off_delay_s" in data:
+        cfg.cam_auto_off_delay_s = max(1.0, float(data["cam_auto_off_delay_s"]))
+    if "ai_feed_jpeg_quality" in data:
+        q = int(data["ai_feed_jpeg_quality"])
+        cfg.ai_feed_jpeg_quality = max(60, min(98, q))
+    if "robot_ai_push_url" in data:
+        cfg.robot_ai_push_url = str(data["robot_ai_push_url"])
+    if "cam_ws_token" in data:
+        cfg.cam_ws_token = str(data["cam_ws_token"])
+
+
+def _load_config_file() -> None:
+    if not CONFIG_PATH.is_file():
+        return
+    try:
+        data = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+        if isinstance(data, dict):
+            _cfg_apply_dict(data)
+            _log(f"Đã nạp cấu hình: {CONFIG_PATH}")
+    except Exception as exc:
+        _log(f"CẢNH BÁO: không đọc được file cấu hình {CONFIG_PATH}: {exc}")
+
+
+def _save_config_file() -> None:
+    try:
+        CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        CONFIG_PATH.write_text(
+            json.dumps(_cfg_to_dict(), ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+    except Exception as exc:
+        _log(f"CẢNH BÁO: không ghi được file cấu hình {CONFIG_PATH}: {exc}")
+
+
 def _esp_http_timeout() -> httpx.Timeout:
+    # Tránh “kẹt” lâu khi Wi‑Fi chập chờn: connect/pool nhanh, read dùng theo cấu hình.
     t = max(3.0, float(cfg.robot_http_timeout_s))
-    return httpx.Timeout(t)
+    return httpx.Timeout(connect=2.0, read=t, write=2.0, pool=2.0)
 
 
 def _fmt_robot_poll_error(exc: BaseException) -> str:
@@ -77,6 +158,8 @@ def _fmt_robot_poll_error(exc: BaseException) -> str:
 
 stream_reader: MjpegStreamReader | None = None
 stream_lock = threading.Lock()
+cam_stream_active = False
+last_fire_seen_ts = 0.0
 model: YOLO | None = None
 annotated_lock = threading.Lock()
 annotated_frame: np.ndarray | None = None
@@ -134,6 +217,61 @@ class ConnectionHub:
 hub = ConnectionHub()
 
 
+class CamCommandHub:
+    """Một hoặc nhiều ESP32-CAM nối WebSocket vào đây; nhận JSON {\"cmd\":\"stream_on|stream_off\"}."""
+
+    def __init__(self):
+        self._clients: list[WebSocket] = []
+        self._lock = asyncio.Lock()
+
+    async def register(self, ws: WebSocket) -> None:
+        async with self._lock:
+            self._clients.append(ws)
+            n = len(self._clients)
+        _log(
+            f"ESP32-CAM WebSocket: đã kết nối (tổng {n}) — chờ lệnh stream_on/stream_off"
+        )
+
+    async def unregister(self, ws: WebSocket) -> None:
+        async with self._lock:
+            if ws in self._clients:
+                self._clients.remove(ws)
+
+    async def broadcast_cmd(self, cmd: str) -> int:
+        msg = json.dumps({"cmd": cmd}, ensure_ascii=False)
+        async with self._lock:
+            clients = list(self._clients)
+        sent = 0
+        dead: list[WebSocket] = []
+        for c in clients:
+            try:
+                await c.send_text(msg)
+                sent += 1
+            except Exception:
+                dead.append(c)
+        if dead:
+            async with self._lock:
+                for d in dead:
+                    if d in self._clients:
+                        self._clients.remove(d)
+        return sent
+
+
+cam_hub = CamCommandHub()
+
+
+def _notify_cam_cmd(cmd: str) -> int:
+    """Gửi lệnh tới mọi CAM đang nối WS (gọi từ thread worker)."""
+    if main_loop is None:
+        return 0
+    try:
+        fut = asyncio.run_coroutine_threadsafe(cam_hub.broadcast_cmd(cmd), main_loop)
+        return int(fut.result(timeout=3.0))
+    except Exception as exc:
+        _log(f"Bắn lệnh WebSocket camera lỗi: {exc}")
+        return 0
+
+
 def restart_stream_reader() -> None:
     global stream_reader
     with stream_lock:
@@ -147,6 +285,67 @@ def restart_stream_reader() -> None:
             _log(f"MJPEG stream: {url}")
         else:
             _log("MJPEG stream: (trống — cấu hình URL trong UI)")
+
+
+def _cam_control_url(path: str) -> str:
+    base = (cfg.cam_control_base_url or "").strip().rstrip("/")
+    return f"{base}{path}"
+
+
+def _set_cam_stream_active(enable: bool) -> None:
+    global stream_reader, cam_stream_active
+    if enable == cam_stream_active:
+        return
+
+    cmd = "stream_on" if enable else "stream_off"
+    n_ws = _notify_cam_cmd(cmd)
+    if n_ws:
+        _log(f"Lệnh camera qua WebSocket → {n_ws} client")
+
+    # Cho firmware kịp bật/tắt sensor trước khi laptop mở MJPEG.
+    time.sleep(0.12)
+
+    control_ok = n_ws > 0
+    base = (cfg.cam_control_base_url or "").strip()
+
+    if not control_ok and base:
+        path = "/camera/on" if enable else "/camera/off"
+        try:
+            with httpx.Client(timeout=_esp_http_timeout()) as client:
+                r = client.post(_cam_control_url(path))
+                r.raise_for_status()
+            control_ok = True
+            _log(f"Lệnh camera qua HTTP {path} OK")
+        except Exception as exc:
+            _log(f"Lỗi gửi lệnh camera {path}: {exc}")
+            if cfg.cam_control_strict:
+                return
+            _log(
+                "Fallback: vẫn tiếp tục bật/tắt stream trên laptop (giả sử CAM firmware cũ luôn stream)."
+            )
+    elif not control_ok and not base:
+        _log(
+            "CẢNH BÁO: không có client WebSocket camera và cam_control_base_url trống — không gửi lệnh tới CAM."
+        )
+        if cfg.cam_control_strict:
+            return
+
+    with stream_lock:
+        if stream_reader is not None:
+            stream_reader.stop()
+            stream_reader = None
+        if enable:
+            time.sleep(0.15)
+            su = (cfg.stream_url or "").strip()
+            if su:
+                stream_reader = MjpegStreamReader(su).start()
+            else:
+                _log("stream_url trống — không mở MJPEG reader")
+    cam_stream_active = enable
+    if enable:
+        _log("ESP32-CAM: STREAM ON" if control_ok else "ESP32-CAM: STREAM ON (fallback)")
+    else:
+        _log("ESP32-CAM: STREAM OFF" if control_ok else "ESP32-CAM: STREAM OFF (fallback)")
 
 
 _ai_push_err_log_ts: float = 0.0
@@ -242,6 +441,7 @@ def _inference_worker():
 
 
 def _robot_poll_worker():
+    global last_fire_seen_ts
     while not worker_stop.is_set():
         url = (cfg.robot_status_url or "").strip()
         if not url:
@@ -266,11 +466,22 @@ def _robot_poll_worker():
                 r.raise_for_status()
                 data = r.json()
                 data["_ok"] = True
+                # CRITICAL: broadcast telemetry NGAY để UI không bị "trễ/đảo" khi phần bật/tắt camera
+                # bị timeout (HTTP /camera/on|off). Camera control không được phép block đường IR.
                 if main_loop and main_loop.is_running():
                     asyncio.run_coroutine_threadsafe(
                         hub.broadcast({"type": "sensors", "data": data}),
                         main_loop,
                     )
+
+                fire_any = bool(data.get("flame_left")) or bool(data.get("flame_right"))
+                now = time.monotonic()
+                if fire_any:
+                    last_fire_seen_ts = now
+                    if not cam_stream_active:
+                        _set_cam_stream_active(True)
+                elif cam_stream_active and (now - last_fire_seen_ts) >= cfg.cam_auto_off_delay_s:
+                    _set_cam_stream_active(False)
         except Exception as exc:
             payload = {"_ok": False, "error": _fmt_robot_poll_error(exc)}
             if main_loop and main_loop.is_running():
@@ -287,6 +498,7 @@ async def lifespan(_app: FastAPI):
 
     main_loop = asyncio.get_running_loop()
     worker_stop.clear()
+    _load_config_file()
 
     if DEFAULT_MODEL.is_file():
         _log(f"Đang tải YOLO: {DEFAULT_MODEL}")
@@ -299,7 +511,8 @@ async def lifespan(_app: FastAPI):
     robot_thread = threading.Thread(target=_robot_poll_worker, daemon=True)
     inf_thread.start()
     robot_thread.start()
-    restart_stream_reader()
+    # Khởi động ở trạng thái nghỉ: camera tắt, chỉ bật khi S3 báo có lửa.
+    _set_cam_stream_active(False)
 
     yield
 
@@ -309,6 +522,7 @@ async def lifespan(_app: FastAPI):
         if stream_reader is not None:
             stream_reader.stop()
             stream_reader = None
+    _set_cam_stream_active(False)
 
 
 app = FastAPI(title="FireVisonBot Dashboard", lifespan=lifespan)
@@ -360,14 +574,7 @@ async def ai_feed_route():
 @app.get("/api/config")
 async def api_config_get():
     return {
-        "stream_url": cfg.stream_url,
-        "robot_status_url": cfg.robot_status_url,
-        "yolo_imgsz": cfg.yolo_imgsz,
-        "yolo_conf": cfg.yolo_conf,
-        "infer_interval_s": cfg.infer_interval_s,
-        "robot_poll_s": cfg.robot_poll_s,
-        "ai_feed_jpeg_quality": cfg.ai_feed_jpeg_quality,
-        "robot_ai_push_url": cfg.robot_ai_push_url,
+        **_cfg_to_dict(),
         "robot_http_timeout_s": cfg.robot_http_timeout_s,
         "model_path": str(DEFAULT_MODEL),
         "model_exists": DEFAULT_MODEL.is_file(),
@@ -377,26 +584,10 @@ async def api_config_get():
 @app.post("/api/config")
 async def api_config_post(request: Request):
     body = await request.json()
-    if "stream_url" in body:
-        cfg.stream_url = str(body["stream_url"])
-    if "robot_status_url" in body:
-        cfg.robot_status_url = str(body["robot_status_url"])
-    if "yolo_imgsz" in body:
-        cfg.yolo_imgsz = int(body["yolo_imgsz"])
-    if "yolo_conf" in body:
-        cfg.yolo_conf = float(body["yolo_conf"])
-    if "infer_interval_s" in body:
-        cfg.infer_interval_s = float(body["infer_interval_s"])
-    if "robot_poll_s" in body:
-        cfg.robot_poll_s = float(body["robot_poll_s"])
-    if "ai_feed_jpeg_quality" in body:
-        q = int(body["ai_feed_jpeg_quality"])
-        cfg.ai_feed_jpeg_quality = max(60, min(98, q))
-    if "robot_ai_push_url" in body:
-        cfg.robot_ai_push_url = str(body["robot_ai_push_url"])
-    if "robot_http_timeout_s" in body:
-        cfg.robot_http_timeout_s = max(3.0, float(body["robot_http_timeout_s"]))
-    await asyncio.to_thread(restart_stream_reader)
+    _cfg_apply_dict(body)
+    _save_config_file()
+    if cam_stream_active:
+        await asyncio.to_thread(restart_stream_reader)
     _log("Đã cập nhật cấu hình (stream/robot/YOLO).")
     return await api_config_get()
 
@@ -454,6 +645,24 @@ async def websocket_endpoint(ws: WebSocket):
         pass
     finally:
         hub.disconnect(ws)
+
+
+@app.websocket("/ws/cam")
+async def websocket_cam_endpoint(ws: WebSocket):
+    token = (cfg.cam_ws_token or "").strip()
+    if token:
+        if ws.query_params.get("token") != token:
+            await ws.close(code=4401)
+            return
+    await ws.accept()
+    await cam_hub.register(ws)
+    try:
+        while True:
+            await ws.receive()
+    except WebSocketDisconnect:
+        pass
+    finally:
+        await cam_hub.unregister(ws)
 
 
 if __name__ == "__main__":

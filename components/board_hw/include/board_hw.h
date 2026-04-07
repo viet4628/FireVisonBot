@@ -14,6 +14,12 @@
 /* --- Cảm biến lửa IR (mức thấp = có lửa, pull-up) --- */
 #define BOARD_GPIO_FLAME_LEFT   GPIO_NUM_4
 #define BOARD_GPIO_FLAME_RIGHT  GPIO_NUM_6
+/**
+ * Một số module IR flame xuất mức LOW khi có lửa (active-low),
+ * một số khác xuất mức HIGH khi có lửa (active-high).
+ * Đặt 1 nếu active-low, đặt 0 nếu active-high.
+ */
+#define BOARD_FLAME_ACTIVE_LOW  1
 
 /* --- HC-SR04 (MCPWM capture) --- */
 #define BOARD_GPIO_SR04_TRIG    GPIO_NUM_5

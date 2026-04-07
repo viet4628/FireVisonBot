@@ -5,6 +5,8 @@
 #include <Arduino.h>
 #include "esp_camera.h"
 #include <WiFi.h>
+// Arduino Library Manager: "WebSockets" (Links2004) — WebSocketsClient.h
+#include <WebSocketsClient.h>
 #include "esp_http_server.h"
 #include <lwip/sockets.h>
 #include <lwip/netdb.h>
@@ -13,6 +15,15 @@
 
 const char *ssid     = "lap09";
 const char *password = "nk111111";
+
+// Máy chạy dashboard: uvicorn main:app --host 0.0.0.0 --port 8765
+// (Hotspot Windows thường là .1; đổi cho đúng IP laptop khi CAM ping được.)
+#define DASHBOARD_WS_HOST "192.168.137.1"
+#define DASHBOARD_WS_PORT 8765
+// Trùng với "cam_ws_token" trong config/system_config.json; rỗng = không gửi ?token=
+#define DASHBOARD_WS_TOKEN ""
+
+WebSocketsClient ws;
 
 #define PWDN_GPIO_NUM     32
 #define RESET_GPIO_NUM    -1
@@ -32,12 +43,22 @@ const char *password = "nk111111";
 #define PCLK_GPIO_NUM     22
 
 httpd_handle_t stream_httpd = NULL;
+static bool g_stream_enabled = false;
+
+/*
+ * Ưu tiên mượt cho pipeline YOLO qua Wi-Fi:
+ * - VGA giữ đủ chi tiết cho phát hiện lửa.
+ * - jpeg_quality số lớn hơn => nén mạnh hơn => frame nhỏ hơn, đỡ lag.
+ */
+#define CAM_FRAME_SIZE   FRAMESIZE_VGA
+#define CAM_JPEG_Q_PSRAM 13
+#define CAM_JPEG_Q_NO_PSRAM 15
 
 static void configure_camera_quality(sensor_t *s) {
   s->set_brightness(s, 0);
   s->set_contrast(s, 1);
   s->set_saturation(s, 0);
-  s->set_sharpness(s, 2);
+  s->set_sharpness(s, 1);
   s->set_whitebal(s, 1);
   s->set_awb_gain(s, 1);
   s->set_exposure_ctrl(s, 1);
@@ -59,6 +80,11 @@ static const char *_BOUNDARY = "\r\n--frame\r\n";
 static const char *_PART = "Content-Type: image/jpeg\r\nContent-Length: %u\r\n\r\n";
 
 static esp_err_t stream_handler(httpd_req_t *req) {
+  if (!g_stream_enabled) {
+    httpd_resp_set_status(req, "503 Service Unavailable");
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_send(req, "{\"ok\":false,\"error\":\"stream_disabled\"}", HTTPD_RESP_USE_STRLEN);
+  }
   camera_fb_t *fb = NULL;
   char part_buf[64];
 
@@ -103,6 +129,65 @@ static esp_err_t stream_handler(httpd_req_t *req) {
   return ESP_OK;
 }
 
+static void set_camera_active(bool on) {
+  sensor_t *s = esp_camera_sensor_get();
+  if (s) {
+    s->set_sleep(s, on ? 0 : 1);
+  }
+  g_stream_enabled = on;
+}
+
+static void onWsEvent(WStype_t type, uint8_t *payload, size_t length) {
+  switch (type) {
+    case WStype_DISCONNECTED:
+      Serial.println("[WS] ngắt kết nối dashboard — sẽ tự kết nối lại");
+      break;
+    case WStype_CONNECTED:
+      Serial.print("[WS] đã nối dashboard: ");
+      Serial.println(payload ? (char *)payload : "(null)");
+      break;
+    case WStype_TEXT: {
+      String s;
+      if (payload && length) {
+        s.reserve(length + 1);
+        for (size_t i = 0; i < length; i++) s += (char)payload[i];
+      }
+      if (s.indexOf("stream_on") >= 0) {
+        set_camera_active(true);
+        Serial.println("[WS] stream ON");
+      } else if (s.indexOf("stream_off") >= 0) {
+        set_camera_active(false);
+        Serial.println("[WS] stream OFF");
+      }
+      break;
+    }
+    default:
+      break;
+  }
+}
+
+static esp_err_t cam_on_handler(httpd_req_t *req) {
+  set_camera_active(true);
+  httpd_resp_set_type(req, "application/json");
+  httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+  return httpd_resp_send(req, "{\"ok\":true,\"camera\":\"on\"}", HTTPD_RESP_USE_STRLEN);
+}
+
+static esp_err_t cam_off_handler(httpd_req_t *req) {
+  set_camera_active(false);
+  httpd_resp_set_type(req, "application/json");
+  httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+  return httpd_resp_send(req, "{\"ok\":true,\"camera\":\"off\"}", HTTPD_RESP_USE_STRLEN);
+}
+
+static esp_err_t cam_status_handler(httpd_req_t *req) {
+  char body[64];
+  snprintf(body, sizeof(body), "{\"ok\":true,\"stream_enabled\":%s}", g_stream_enabled ? "true" : "false");
+  httpd_resp_set_type(req, "application/json");
+  httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+  return httpd_resp_send(req, body, HTTPD_RESP_USE_STRLEN);
+}
+
 static void startCameraServer() {
   httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
   cfg.server_port = 81;
@@ -118,9 +203,30 @@ static void startCameraServer() {
       .handler = stream_handler,
       .user_ctx = NULL,
   };
+  httpd_uri_t cam_on_uri = {
+      .uri = "/camera/on",
+      .method = HTTP_POST,
+      .handler = cam_on_handler,
+      .user_ctx = NULL,
+  };
+  httpd_uri_t cam_off_uri = {
+      .uri = "/camera/off",
+      .method = HTTP_POST,
+      .handler = cam_off_handler,
+      .user_ctx = NULL,
+  };
+  httpd_uri_t cam_status_uri = {
+      .uri = "/camera/status",
+      .method = HTTP_GET,
+      .handler = cam_status_handler,
+      .user_ctx = NULL,
+  };
 
   if (httpd_start(&stream_httpd, &cfg) == ESP_OK) {
     httpd_register_uri_handler(stream_httpd, &stream_uri);
+    httpd_register_uri_handler(stream_httpd, &cam_on_uri);
+    httpd_register_uri_handler(stream_httpd, &cam_off_uri);
+    httpd_register_uri_handler(stream_httpd, &cam_status_uri);
   }
 }
 
@@ -152,14 +258,14 @@ void setup() {
   config.pixel_format = PIXFORMAT_JPEG;
 
   if (psramFound()) {
-    config.frame_size = FRAMESIZE_VGA;
-    config.jpeg_quality = 9;
+    config.frame_size = CAM_FRAME_SIZE;
+    config.jpeg_quality = CAM_JPEG_Q_PSRAM;
     config.fb_count = 2;
     config.grab_mode = CAMERA_GRAB_LATEST;
     config.fb_location = CAMERA_FB_IN_PSRAM;
   } else {
-    config.frame_size = FRAMESIZE_VGA;
-    config.jpeg_quality = 11;
+    config.frame_size = CAM_FRAME_SIZE;
+    config.jpeg_quality = CAM_JPEG_Q_NO_PSRAM;
     config.fb_count = 1;
     config.grab_mode = CAMERA_GRAB_LATEST;
   }
@@ -169,7 +275,13 @@ void setup() {
     return;
   }
 
-  configure_camera_quality(esp_camera_sensor_get());
+  sensor_t *s = esp_camera_sensor_get();
+  configure_camera_quality(s);
+  if (s) {
+    s->set_framesize(s, CAM_FRAME_SIZE);
+    s->set_quality(s, psramFound() ? CAM_JPEG_Q_PSRAM : CAM_JPEG_Q_NO_PSRAM);
+  }
+  set_camera_active(false);
 
   WiFi.mode(WIFI_STA);
   WiFi.begin(ssid, password);
@@ -183,8 +295,27 @@ void setup() {
   Serial.println();
   Serial.println(WiFi.localIP());
   startCameraServer();
+  Serial.printf("Camera profile: size=%d, q(psram)=%d, q(no_psram)=%d\n",
+                CAM_FRAME_SIZE, CAM_JPEG_Q_PSRAM, CAM_JPEG_Q_NO_PSRAM);
+  Serial.println("Camera control: POST /camera/on, POST /camera/off, GET /camera/status");
+  {
+    String wsPath = "/ws/cam";
+    if (strlen(DASHBOARD_WS_TOKEN) > 0) {
+      wsPath += "?token=";
+      wsPath += DASHBOARD_WS_TOKEN;
+    }
+    ws.begin(DASHBOARD_WS_HOST, DASHBOARD_WS_PORT, wsPath.c_str());
+    ws.onEvent(onWsEvent);
+    ws.setReconnectInterval(5000);
+    Serial.print("[WS] Kết nối tới ws://");
+    Serial.print(DASHBOARD_WS_HOST);
+    Serial.print(":");
+    Serial.print(DASHBOARD_WS_PORT);
+    Serial.println(wsPath);
+  }
 }
 
 void loop() {
-  delay(10000);
+  ws.loop();
+  delay(2);
 }
