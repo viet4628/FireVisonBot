@@ -16,6 +16,10 @@
       <span id="ws-dot" class="dot off"></span>
       <span id="ws-label">WebSocket</span>
     </div>
+    <div class="status-pill">
+      <span id="cam-dot" class="dot off"></span>
+      <span id="cam-label">ESP32-CAM</span>
+    </div>
   </header>
 
   <section class="toolbar">
@@ -34,6 +38,15 @@
   </main>
 
   <section class="metrics">
+    <div class="card">
+      <h3>ESP32-CAM — kết nối</h3>
+      <ul class="kv" id="cam-kv">
+        <li><span>WebSocket</span><em id="c-ws">—</em></li>
+        <li><span>Số CAM nối</span><em id="c-count">—</em></li>
+        <li><span>Stream MJPEG</span><em id="c-stream">—</em></li>
+        <li><span>Lỗi gần nhất</span><em id="c-fail">—</em></li>
+      </ul>
+    </div>
     <div class="card">
       <h3>ESP32-S3 — cảm biến</h3>
       <ul class="kv" id="sensor-kv">

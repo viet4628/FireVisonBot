@@ -105,6 +105,46 @@
     }
   }
 
+  function setCamStatus(data) {
+    const camDot = document.getElementById("cam-dot");
+    const camLabel = document.getElementById("cam-label");
+    const cWs = document.getElementById("c-ws");
+    const cCount = document.getElementById("c-count");
+    const cStream = document.getElementById("c-stream");
+    const cFail = document.getElementById("c-fail");
+
+    const wsOk = data.ws_connected === true;
+    const streamOn = data.stream_active === true;
+
+    if (camDot) {
+      camDot.classList.remove("on", "warn", "off");
+      if (wsOk) {
+        camDot.classList.add(streamOn ? "warn" : "on");
+      } else {
+        camDot.classList.add("off");
+      }
+    }
+    if (camLabel) {
+      const n = data.ws_count || 0;
+      camLabel.textContent = wsOk
+        ? `ESP32-CAM · ${n} nối${streamOn ? " · STREAM" : ""}`
+        : "ESP32-CAM · chưa nối";
+    }
+    if (cWs) {
+      cWs.textContent = wsOk ? `Đã kết nối (${data.ws_count} CAM)` : "Chưa kết nối";
+      cWs.style.color = wsOk ? "var(--ok)" : "var(--bad)";
+    }
+    if (cCount) cCount.textContent = String(data.ws_count || 0);
+    if (cStream) {
+      cStream.textContent = streamOn ? "STREAM ĐANG BẬT" : "tắt";
+      cStream.style.color = streamOn ? "var(--warn)" : "var(--muted)";
+    }
+    if (cFail) {
+      cFail.textContent = data.last_fail_reason || "không có";
+      cFail.style.color = data.last_fail_reason ? "var(--bad)" : "var(--muted)";
+    }
+  }
+
   function connectWs() {
     const proto = location.protocol === "https:" ? "wss" : "ws";
     const ws = new WebSocket(`${proto}://${location.host}/ws`);
@@ -122,6 +162,7 @@
         const msg = JSON.parse(ev.data);
         if (msg.type === "sensors") setSensors(msg.data);
         if (msg.type === "detection") setDetection(msg.data);
+        if (msg.type === "cam_status") setCamStatus(msg.data);
         if (msg.type === "log") appendLog(msg.line);
         if (msg.type === "log_bulk" && Array.isArray(msg.lines)) {
           logOut.textContent = msg.lines.join("\n") + "\n";
@@ -130,6 +171,7 @@
       } catch (_) {}
     };
   }
+
 
   async function loadConfig() {
     const r = await fetch("/api/config");

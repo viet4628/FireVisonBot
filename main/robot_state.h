@@ -29,6 +29,18 @@ bool robot_state_ai_camera_fresh_ok(float min_conf_0_1);
 /** Thời gian từ lần cập nhật AI (ms), hoặc -1 nếu chưa có. */
 long robot_state_ai_camera_age_ms(void);
 
+/**
+ * Đặt cả confidence và vị trí ngang của bò của lửa trong khung hình (0.0=trái, 0.5=giữa, 1.0=phải).
+ * fire_detected = true nếu YOLO đã vượt ngưỡng conf, false = không thấy lửa.
+ */
+void robot_state_ai_camera_set_pos(float confidence_0_1, float x_ratio_0_1, bool fire_detected);
+
+/** true nếu YOLO đã phát hiện lửa trong lần push mới nhất (và vẫn còn trong cửa sổ thời gian). */
+bool robot_state_ai_camera_fire_detected(void);
+
+/** Vị trí ngang của lửa (0.0=trái, 0.5=giữa, 1.0=phải). */
+float robot_state_ai_camera_x_ratio(void);
+
 #ifdef __cplusplus
 }
 #endif

@@ -50,8 +50,8 @@ WebSocketsClient ws;
 #define PCLK_GPIO_NUM     22
 
 httpd_handle_t stream_httpd = NULL;
-httpd_handle_t control_httpd = NULL;
-static bool g_stream_enabled = false;
+/* Loại bỏ control_httpd, stream luôn được bật */
+static bool g_stream_enabled = true;
 
 /*
  * Ưu tiên mượt cho pipeline YOLO qua Wi-Fi:
@@ -90,11 +90,6 @@ static const char *_BOUNDARY = "\r\n--frame\r\n";
 static const char *_PART = "Content-Type: image/jpeg\r\nContent-Length: %u\r\n\r\n";
 
 static esp_err_t stream_handler(httpd_req_t *req) {
-  if (!g_stream_enabled) {
-    httpd_resp_set_status(req, "503 Service Unavailable");
-    httpd_resp_set_type(req, "application/json");
-    return httpd_resp_send(req, "{\"ok\":false,\"error\":\"stream_disabled\"}", HTTPD_RESP_USE_STRLEN);
-  }
   camera_fb_t *fb = NULL;
   char part_buf[64];
 
@@ -182,28 +177,6 @@ static void onWsEvent(WStype_t type, uint8_t *payload, size_t length) {
 }
 #endif
 
-static esp_err_t cam_on_handler(httpd_req_t *req) {
-  set_camera_active(true);
-  httpd_resp_set_type(req, "application/json");
-  httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
-  return httpd_resp_send(req, "{\"ok\":true,\"camera\":\"on\"}", HTTPD_RESP_USE_STRLEN);
-}
-
-static esp_err_t cam_off_handler(httpd_req_t *req) {
-  set_camera_active(false);
-  httpd_resp_set_type(req, "application/json");
-  httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
-  return httpd_resp_send(req, "{\"ok\":true,\"camera\":\"off\"}", HTTPD_RESP_USE_STRLEN);
-}
-
-static esp_err_t cam_status_handler(httpd_req_t *req) {
-  char body[64];
-  snprintf(body, sizeof(body), "{\"ok\":true,\"stream_enabled\":%s}", g_stream_enabled ? "true" : "false");
-  httpd_resp_set_type(req, "application/json");
-  httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
-  return httpd_resp_send(req, body, HTTPD_RESP_USE_STRLEN);
-}
-
 static void startCameraServer() {
   httpd_config_t stream_cfg = HTTPD_DEFAULT_CONFIG();
   stream_cfg.server_port = 81;
@@ -213,36 +186,10 @@ static void startCameraServer() {
   stream_cfg.recv_wait_timeout = 10;
   stream_cfg.send_wait_timeout = 10;
 
-  httpd_config_t control_cfg = HTTPD_DEFAULT_CONFIG();
-  control_cfg.server_port = 82;   // Cổng điều khiển riêng
-  control_cfg.ctrl_port = 32770;  // Không trùng ctrl_port của stream
-  control_cfg.max_open_sockets = 3;
-  control_cfg.lru_purge_enable = true;
-  control_cfg.recv_wait_timeout = 6;
-  control_cfg.send_wait_timeout = 6;
-
   httpd_uri_t stream_uri = {
       .uri = "/stream",
       .method = HTTP_GET,
       .handler = stream_handler,
-      .user_ctx = NULL,
-  };
-  httpd_uri_t cam_on_uri = {
-      .uri = "/camera/on",
-      .method = HTTP_POST,
-      .handler = cam_on_handler,
-      .user_ctx = NULL,
-  };
-  httpd_uri_t cam_off_uri = {
-      .uri = "/camera/off",
-      .method = HTTP_POST,
-      .handler = cam_off_handler,
-      .user_ctx = NULL,
-  };
-  httpd_uri_t cam_status_uri = {
-      .uri = "/camera/status",
-      .method = HTTP_GET,
-      .handler = cam_status_handler,
       .user_ctx = NULL,
   };
 
@@ -253,24 +200,6 @@ static void startCameraServer() {
   } else {
     Serial.print("HTTP stream start FAILED: ");
     Serial.println(esp_err_to_name(e1));
-  }
-
-  esp_err_t e2 = httpd_start(&control_httpd, &control_cfg);
-  if (e2 == ESP_OK) {
-    httpd_register_uri_handler(control_httpd, &cam_on_uri);
-    httpd_register_uri_handler(control_httpd, &cam_off_uri);
-    httpd_register_uri_handler(control_httpd, &cam_status_uri);
-    Serial.println("HTTP control: POST /camera/on, POST /camera/off, GET /camera/status @ :82");
-  } else {
-    Serial.print("HTTP control start FAILED: ");
-    Serial.println(esp_err_to_name(e2));
-    // Fallback an toàn: nếu không mở được cổng 82 thì vẫn cho điều khiển trên cổng stream 81.
-    if (stream_httpd) {
-      httpd_register_uri_handler(stream_httpd, &cam_on_uri);
-      httpd_register_uri_handler(stream_httpd, &cam_off_uri);
-      httpd_register_uri_handler(stream_httpd, &cam_status_uri);
-      Serial.println("HTTP control FALLBACK: /camera/* đã gắn vào :81");
-    }
   }
 }
 
@@ -325,7 +254,7 @@ void setup() {
     s->set_framesize(s, CAM_FRAME_SIZE);
     s->set_quality(s, psramFound() ? CAM_JPEG_Q_PSRAM : CAM_JPEG_Q_NO_PSRAM);
   }
-  set_camera_active(false);
+  set_camera_active(true);
 
   WiFi.mode(WIFI_STA);
   WiFi.begin(ssid, password);
@@ -341,7 +270,7 @@ void setup() {
   startCameraServer();
   Serial.printf("Camera profile: size=%d, q(psram)=%d, q(no_psram)=%d\n",
                 CAM_FRAME_SIZE, CAM_JPEG_Q_PSRAM, CAM_JPEG_Q_NO_PSRAM);
-  Serial.println("Camera split ports: stream=:81 | control=:82");
+  Serial.println("Camera always streaming on :81");
   #if ENABLE_DASHBOARD_WS
   {
     String wsPath = "/ws/cam";

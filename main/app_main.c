@@ -103,8 +103,8 @@ static void buzzer_beep_tick(bool active) {
 #define PATROL_DUTY            1023u
 #define SPIN_DUTY              1023u
 #define SPIN_180_MS            1400u
-/* Giảm riêng tốc độ lúc căn hướng (tăng lại nhẹ theo yêu cầu). */
-#define ALIGN_SPIN_DUTY        820u
+/* Giảm riêng tốc độ lúc căn hướng (+30%: 820→1023, cap tại max). */
+#define ALIGN_SPIN_DUTY        1023u
 
 /** Xoay nhẹ bánh khi IR trái xác nhận (ms), 0 = tắt. Canh hướng thay vì xoay FPV. */
 #define LEFT_FIRE_PIVOT_MS     0u
@@ -116,8 +116,21 @@ static void buzzer_beep_tick(bool active) {
 /* Bù góc xoay lố (15-20 độ) khi servo FPV bám theo góc của IR phải */
 #define RIGHT_IR_FPV_OFFSET_DEG 10.0f
 
+/* ─── Camera Approach: tiến tới theo camera ─── */
+/** Ngưỡng confidence YOLO để kích hoạt chế độ tiếp cận bằng cámera. */
+#define CAM_APPROACH_MIN_CONF      0.55f
+/** Tốc độ tiến thẳng khi camera thấy lửa ở giữa. (+30%: 700→910) */
+#define CAM_APPROACH_FWD_DUTY      910u
+/** Tốc độ quay khi lửa lệch trái/phải chặn vật cản. (+30%: 600→780) */
+#define CAM_APPROACH_TURN_DUTY     780u
+/** Vùng chết giữa khung hình (x_ratio 0.5 ± DEADBAND tiến thẳng). */
+#define CAM_APPROACH_X_DEADBAND    0.18f
+/** Thời gian tối đa trong STATE_CAMERA_APPROACH trước khi tự quay về PATROL (ms). */
+#define CAM_APPROACH_TIMEOUT_MS    8000u
+
 typedef enum {
     STATE_PATROL,
+    STATE_CAMERA_APPROACH,  /* Camera thấy lửa, IR chưa nhận — tiến tới */
     STATE_EXTINGUISH,
 } robot_state_t;
 
@@ -336,6 +349,14 @@ static void fire_control_task(void *arg) {
 
                 fire_stable_loops = 0;
 
+                /* Camera thấy lửa nhưng IR chưa bắt được → vào chế độ tiếp cận */
+                if (robot_state_ai_camera_fire_detected()) {
+                    ESP_LOGW(TAG, "Camera thấy lửa (x=%.2f) nhưng IR chưa bắt → CAMERA_APPROACH.",
+                             (double)robot_state_ai_camera_x_ratio());
+                    state = STATE_CAMERA_APPROACH;
+                    break;
+                }
+
 #if PATROL_ENABLE_DRIVE
                 if (!path_blocked) {
                     motor_forward(PATROL_DUTY);
@@ -354,6 +375,110 @@ static void fire_control_task(void *arg) {
                 break;
 
 
+            case STATE_CAMERA_APPROACH: {
+                /*
+                 * Tiến cầm về phía lửa theo camera (differential drive — không xoay tại chỗ).
+                 * Công thức: error = x - 0.5 (-0.5..+0.5)
+                 *   left_duty  = BASE × (1 - error×STEER_GAIN)   [lửa bên trái → giảm bánh trái]
+                 *   right_duty = BASE × (1 + error×STEER_GAIN)   [lửa bên phải → giảm bánh phải]
+                 * Giá trị dưới MIN_DUTY vẫn giữ tiến (không về 0, để không xoay tại chỗ).
+                 * Servo IR quét nhanh hơn bình thường trong lúc tiếp cận.
+                 * Thoát:
+                 *   - IR bắt được lửa → STATE_EXTINGUISH
+                 *   - Camera mất tín hiệu hoặc timeout → STATE_PATROL
+                 */
+                static TickType_t approach_start_tick = 0;
+                static TickType_t approach_scan_tick  = 0;
+                if (approach_start_tick == 0) {
+                    approach_start_tick = xTaskGetTickCount();
+                    approach_scan_tick  = xTaskGetTickCount();
+                    /* Reset vị trí servo về giữa để quét lại */
+                    scan_angle_L = scan_angle_R = ANGLE_CENTER;
+                    sweep_dir = 1;
+                }
+
+                read_flame_inputs(&fire_l, &fire_r);
+
+                /* IR bắt được lửa → chuyển sang dập lửa */
+                if (fire_l || fire_r) {
+                    approach_start_tick = 0;
+                    motor_stop();
+                    fire_stable_loops++;
+                    if (fire_stable_loops >= IR_FIRE_STABLE_LOOPS) {
+                        fire_stable_loops = 0;
+                        lost_fire_since_tick = 0;
+                        capture_scan_hold(&hold_scan_L, &hold_scan_R);
+                        apply_scan_hold(hold_scan_L, hold_scan_R);
+                        float fpv_angle = fire_r && !fire_l
+                            ? hold_scan_R + RIGHT_IR_FPV_OFFSET_DEG
+                            : fire_l && fire_r
+                                ? (hold_scan_L + hold_scan_R) / 2.0f
+                                : hold_scan_L;
+                        fpv_set_fire_track(fpv_angle);
+                        ESP_LOGW(TAG, "APPROACH: IR bắt được lửa → EXTINGUISH.");
+                        state = STATE_EXTINGUISH;
+                        robot_state_set_extinguish();
+                    }
+                    break;
+                }
+                fire_stable_loops = 0;
+
+                /* Camera mất tín hiệu hoặc timeout → quay về PATROL */
+                bool cam_sees_fire = robot_state_ai_camera_fire_detected();
+                TickType_t approach_elapsed = xTaskGetTickCount() - approach_start_tick;
+                if (!cam_sees_fire || approach_elapsed > pdMS_TO_TICKS(CAM_APPROACH_TIMEOUT_MS)) {
+                    approach_start_tick = 0;
+                    motor_stop();
+                    servos_reset_neutral();
+                    scan_angle_L = scan_angle_R = ANGLE_CENTER;
+                    sweep_dir = 1;
+                    state = STATE_PATROL;
+                    ESP_LOGW(TAG, "APPROACH: hết %s → PATROL.",
+                             cam_sees_fire ? "thời gian" : "tín hiệu camera");
+                    break;
+                }
+
+                /* ─ Servo IR: quét nhanh hơn bình thường ─ */
+#define APPROACH_SCAN_TICK_MS   (SCAN_TICK_MS * 55 / 100)   /* ~55% kỳ chuẩn = nhanh hơn ~1.8x */
+                if (xTaskGetTickCount() - approach_scan_tick >= pdMS_TO_TICKS(APPROACH_SCAN_TICK_MS)) {
+                    approach_scan_tick = xTaskGetTickCount();
+                    peripheral_idle_sweep_opposite(&scan_angle_L, &scan_angle_R, &sweep_dir);
+                }
+
+                /* ─ Differential drive — cả 2 bánh tiến, duty lệch nhau theo vị trí lửa ─ */
+                robot_state_set_idle_scan();
+                float x = robot_state_ai_camera_x_ratio();   /* 0.0=trái … 1.0=phải */
+                float error = x - 0.5f;                       /* -0.5 … +0.5 */
+
+                /* STEER_GAIN: độ nhạy lái. 1.6 → lượng lệch tối đa = 80% độ chầm / 120% duty */
+                const float STEER_GAIN   = 1.6f;
+                /* Duty tối thiểu mỗi bánh khi lửa lệch sang bên kia (để xe vẫn tiến, không xoay tại chỗ) */
+                const uint32_t MIN_CURVE_DUTY = CAM_APPROACH_FWD_DUTY * 30 / 100;
+
+                float l_f = (float)CAM_APPROACH_FWD_DUTY * (1.0f - error * STEER_GAIN);
+                float r_f = (float)CAM_APPROACH_FWD_DUTY * (1.0f + error * STEER_GAIN);
+
+                /* Giới hạn duty vào [MIN_CURVE_DUTY, DUTY_MAX] */
+                if (l_f < (float)MIN_CURVE_DUTY) l_f = (float)MIN_CURVE_DUTY;
+                if (r_f < (float)MIN_CURVE_DUTY) r_f = (float)MIN_CURVE_DUTY;
+
+                uint32_t duty_l = (uint32_t)l_f;
+                uint32_t duty_r = (uint32_t)r_f;
+
+                if (path_blocked) {
+                    /* Vật cản phía trước: xoay nhẹ về phía lửa để né vòng */
+                    if (error < 0.0f) {
+                        motor_turn_left(CAM_APPROACH_TURN_DUTY);
+                    } else {
+                        motor_turn_right(CAM_APPROACH_TURN_DUTY);
+                    }
+                } else {
+                    motor_drive_curve(duty_l, duty_r);
+                    ESP_LOGD(TAG, "APPROACH curve: x=%.2f L=%lu R=%lu",
+                             (double)x, (unsigned long)duty_l, (unsigned long)duty_r);
+                }
+                break;
+            }
 
 
 

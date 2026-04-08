@@ -42,6 +42,35 @@ static float parse_json_confidence(const char *buf)
     return v;
 }
 
+/** Đọc một trường số float từ JSON thô (linear scan). */
+static float parse_json_float(const char *buf, const char *key, float default_val)
+{
+    const char *p = strstr(buf, key);
+    if (p == NULL) return default_val;
+    p = strchr(p, ':');
+    if (p == NULL) return default_val;
+    p++;
+    while (*p == ' ' || *p == '\t') p++;
+    char *end = NULL;
+    float v = strtof(p, &end);
+    if (end == p) return default_val;
+    return v;
+}
+
+/** Đọc trường boolean từ JSON thô. */
+static bool parse_json_bool(const char *buf, const char *key, bool default_val)
+{
+    const char *p = strstr(buf, key);
+    if (p == NULL) return default_val;
+    p = strchr(p, ':');
+    if (p == NULL) return default_val;
+    p++;
+    while (*p == ' ' || *p == '\t') p++;
+    if (strncmp(p, "true", 4) == 0)  return true;
+    if (strncmp(p, "false", 5) == 0) return false;
+    return default_val;
+}
+
 static esp_err_t api_ai_fire_post(httpd_req_t *req)
 {
     char buf[256];
@@ -76,17 +105,21 @@ static esp_err_t api_ai_fire_post(httpd_req_t *req)
         httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
         return httpd_resp_send(req, "{\"ok\":false,\"error\":\"bad_json\"}", HTTPD_RESP_USE_STRLEN);
     }
-    if (c > 1.f) {
-        c = 1.f;
-    }
+    if (c > 1.f) c = 1.f;
 
-    robot_state_ai_camera_set(c);
+    /* Vị trí ngang của lửa trong khung hình: 0.0=trái, 0.5=giữa, 1.0=phải */
+    float x_ratio = parse_json_float(buf, "fire_x_ratio", 0.5f);
+    /* true khi YOLO đã vượt ngưỡng conf và có bbox lửa */
+    bool fire_det = parse_json_bool(buf, "fire_detected", (c >= ROBOT_STATE_AI_RELAY_MIN_CONF));
+
+    robot_state_ai_camera_set_pos(c, x_ratio, fire_det);
 
     static int64_t s_ai_fire_log_us;
     int64_t now_us = esp_timer_get_time();
     if (c >= 0.5f && (now_us - s_ai_fire_log_us) >= (1000 * 1000)) {
         s_ai_fire_log_us = now_us;
-        ESP_LOGI(TAG, "ai_fire OK: confidence=%.3f", (double)c);
+        ESP_LOGI(TAG, "ai_fire OK: confidence=%.3f x_ratio=%.2f detected=%d",
+                 (double)c, (double)x_ratio, (int)fire_det);
     }
 
     httpd_resp_set_type(req, "application/json; charset=utf-8");

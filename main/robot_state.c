@@ -75,3 +75,38 @@ long robot_state_ai_camera_age_ms(void)
     return (long)((esp_timer_get_time() - s_ai_update_us) / 1000);
 }
 
+/* ─── Vị trí lửa trong khung hình (x_ratio) ─── */
+static bool  s_ai_fire_detected = false;
+static float s_ai_x_ratio = 0.5f;
+static int64_t s_ai_pos_us = 0;
+
+/** Cửa sổ giữ trạng thái "đã thấy lửa từ camera" — 3 giây. */
+#define AI_POS_STALE_US (3000LL * 1000)
+
+void robot_state_ai_camera_set_pos(float confidence_0_1, float x_ratio_0_1, bool fire_detected)
+{
+    /* Cập nhật confidence bình thường */
+    robot_state_ai_camera_set(confidence_0_1);
+
+    /* Cập nhật vị trí */
+    if (x_ratio_0_1 < 0.f) x_ratio_0_1 = 0.f;
+    if (x_ratio_0_1 > 1.f) x_ratio_0_1 = 1.f;
+
+    s_ai_fire_detected = fire_detected;
+    s_ai_x_ratio       = x_ratio_0_1;
+    s_ai_pos_us        = esp_timer_get_time();
+}
+
+bool robot_state_ai_camera_fire_detected(void)
+{
+    if (!s_ai_fire_detected) return false;
+    if (s_ai_pos_us == 0)    return false;
+    /* Hết cửa sổ → không còn tin tức mới → coi như không thấy */
+    if (esp_timer_get_time() - s_ai_pos_us > AI_POS_STALE_US) return false;
+    return true;
+}
+
+float robot_state_ai_camera_x_ratio(void)
+{
+    return s_ai_x_ratio;
+}

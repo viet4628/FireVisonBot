@@ -28,6 +28,8 @@ body {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
   padding: 1.25rem 1.75rem;
   border-bottom: 1px solid var(--border);
   background: linear-gradient(180deg, #13171f 0%, var(--bg) 100%);
@@ -63,6 +65,10 @@ body {
 .dot.on {
   background: var(--ok);
   box-shadow: 0 0 8px var(--ok);
+}
+.dot.warn {
+  background: var(--warn);
+  box-shadow: 0 0 8px var(--warn);
 }
 
 .toolbar {

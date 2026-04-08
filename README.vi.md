@@ -1,273 +1,118 @@
-# FireVisionBot (ESP-IDF / ESP32-S3)
+# 🔥 FireVisionBot (ESP32-S3 AI Firefighting Robot)
 
-Ngôn ngữ:
-- Tiếng Việt: `README.vi.md`
-- English: [`README.md`](README.md)
+[![Language: Vietnamese](https://img.shields.io/badge/Language-Vietnamese-red.svg)](README.vi.md)
+[![Language: English](https://img.shields.io/badge/Language-English-blue.svg)](README.md)
+[![Framework: ESP-IDF](https://img.shields.io/badge/Framework-ESP--IDF%20v5.x-orange.svg)](https://docs.espressif.com/projects/esp-idf/en/latest/esp32s3/index.html)
 
-Repository này chứa firmware ESP-IDF (`fire_robot`) cho xe robot chữa cháy tự động dùng ESP32-S3 N16R8.
+Dự án robot chữa cháy tự động sử dụng **ESP32-S3** kết hợp thị giác máy tính (**YOLOv8**) để nhận diện và dập lửa chính xác. Hệ thống sử dụng cảm biến lửa IR để quét radar và xác thực lại bằng AI qua luồng video từ **ESP32-CAM**.
 
-## Mô Tả Hệ Thống
+---
 
-### Phần cứng
-- **ESP32-S3 N16R8** – MCU trung tâm xử lý chính
-- **ESP32-CAM (AI Thinker)** – quay hình ảnh, stream cho ESP32-S3 để xác minh AI
-- **L298N** – điều khiển 4 động cơ DC (2 kênh, mỗi kênh 2 motor song song)
-- **4 Servo**:
-  - 2 servo quét cảm biến lửa IR (quay 360° ngược hướng nhau)
-  - 2 servo FPV (pan/tilt) điều khiển góc quay ESP32-CAM
-- **2 Cảm biến lửa IR** – gắn trên 2 servo quét
-- **1 HC-SR04** – cảm biến siêu âm kiểm tra khoảng cách / vật cản
-- **1 Relay** – điều khiển động cơ bơm nước
-- **1 Còi buzzer** – báo động khi phát hiện lửa
-- **Model AI (FOMO MobileNetV2 0.35)** – nhận diện lửa, đã train cho ESP32-S3
+## 🏗️ Kiến Trúc Hệ Thống
 
-### Cơ chế hoạt động
+### 1. Phần Cứng (Hardware)
+- **MCU Chính**: ESP32-S3 N16R8 (Xử lý logic, WiFi, Telemetry).
+- **Camera**: ESP32-CAM (Stream MJPEG VGA ổn định qua WiFi).
+- **Di chuyển**: 4 động cơ DC + Driver L298N (Điều khiển PWM độc lập).
+- **Cảm biến quét**: 
+  - 2 Servo quét radar gắn 2 cảm biến lửa IR (Tăng góc quét 180°).
+  - 2 Servo FPV (Pan/Tilt) điều khiển hướng nhìn của Camera.
+- **An toàn & Dập lửa**:
+  - Cảm biến siêu âm HC-SR04 (Tránh vật cản).
+  - Relay + Bơm nước (Dập lửa).
+  - Còi Buzzer (Báo động).
 
-```text
-IDLE_SCAN → FIRE_DETECTED → ORIENT_CAMERA → AI_VERIFY → APPROACH → EXTINGUISH
-                                                            ↑           │
-                                                            └───────────┘
-                                              (mất lửa) → IDLE_SCAN
-```
+### 2. Sơ Đồ Chân (GPIO Mapping) - `board_hw.h`
 
-1. **Chế độ ngủ (IDLE_SCAN)**: 2 servo quét IR quay qua lại, quét lửa liên tục
-2. **Phát hiện lửa (FIRE_DETECTED)**: Cảm biến IR phát hiện → khóa servo → xác nhận 300ms
-3. **Xoay camera (ORIENT_CAMERA)**: 2 servo FPV xoay camera hướng về phía lửa
-4. **Xác minh AI (AI_VERIFY)**: *Placeholder* – ESP32-CAM chụp hình → chạy model AI xác nhận
-5. **Tiếp cận (APPROACH)**: Xe di chuyển về phía lửa, liên tục bám hướng bằng IR
-6. **Dập lửa (EXTINGUISH)**: Đến gần đủ → dừng xe → bật bơm nước → theo dõi lửa tắt
-
-## Sơ Đồ Chân (GPIO)
-
-### Motor – L298N (`components/motor/motor.c`)
-
-| Chức năng | GPIO | Ghi chú |
+| Linh kiện | Chân GPIO | Cấu hình / Ghi chú |
 | --- | --- | --- |
-| MOTOR1 PWM (LEFT) | 9 | Tốc độ bên trái |
-| MOTOR1 RPWM | 10 | Chiều thuận bên trái |
-| MOTOR1 LPWM | 11 | Chiều nghịch bên trái |
-| MOTOR2 PWM (RIGHT) | 14 | Tốc độ bên phải |
-| MOTOR2 RPWM | 12 | Chiều thuận bên phải |
-| MOTOR2 LPWM | 13 | Chiều nghịch bên phải |
+| **Motor Left** | 9 (PWM), 10 (R), 11 (L) | LEDC Timer 1, Ch 4 |
+| **Motor Right** | 14 (PWM), 12 (R), 13 (L) | LEDC Timer 1, Ch 5 |
+| **Servo Scan L/R** | 15, 7 | LEDC Timer 0, Ch 0-1 |
+| **Servo FPV Pan/Tilt**| 38, 39 | LEDC Timer 0, Ch 2-3 |
+| **Flame IR L/R** | 4, 6 | Active Low (Pull-up) |
+| **HC-SR04** | 5 (Trig), 18 (Echo) | MCPWM Capture |
+| **Relay Bơm** | 17 | Active High |
+| **Buzzer** | 16 | Active High |
 
-### Servo (`components/servo/servo.c`)
+---
 
-| Chức năng | GPIO | Ghi chú |
-| --- | --- | --- |
-| Scan Left (IR trái) | 15 | LEDC (`servo.c`) |
-| Scan Right (IR phải) | 7 | LEDC (`servo.c`) |
-| FPV Pan (Servo dưới) | 38 | LEDC (`servo.c`) |
-| FPV Tilt (Servo trên) | 39 | LEDC (`servo.c`) |
+## 🤖 Nguyên Lý Hoạt Động (State Machine)
 
-### Cảm Biến Lửa IR (`components/frame_sensor/frame_sensor.c`)
+Robot vận hành dựa trên 3 trạng thái chính trong [`app_main.c`](main/app_main.c):
 
-| Chức năng | GPIO |
-| --- | --- |
-| Flame Sensor LEFT | 4 |
-| Flame Sensor RIGHT | 6 |
+1.  **STATE_PATROL (Tuần tra)**:
+    - 2 Servo quét IR di chuyển ngược hướng nhau từ -15° đến 180°.
+    - Nếu `PATROL_ENABLE_DRIVE` bật, xe tự tiến và tránh vật cản bằng HC-SR04.
+    - Chờ tín hiệu từ IR hoặc Camera AI.
 
-### HC-SR04 Siêu Âm (`components/hc_sr04/hc_sr04.c`)
+2.  **STATE_CAMERA_APPROACH (Tiếp cận bằng AI)**:
+    - Kích hoạt khi Camera thấy lửa nhưng IR chưa bắt được.
+    - Sử dụng thuật toán **Differential Drive**: Xe tiến và lái mượt mà về phía lửa dựa trên vị trí `x_ratio` từ YOLOv8.
+    - Servo quét IR tăng tốc độ (x1.8) để nhanh chóng khóa mục tiêu.
 
-| Chức năng | GPIO |
-| --- | --- |
-| TRIG | 5 |
-| ECHO | 18 |
+3.  **STATE_EXTINGUISH (Dập lửa)**:
+    - Khóa chặt góc Servo tại vị trí phát hiện lửa.
+    - Còi báo động kêu liên tục.
+    - **Điều kiện bật bơm**: (IR phát hiện lửa) **VÀ** (AI xác nhận Confidence > 65%).
 
-### Relay – Bơm Nước (`components/relay/relay.c`)
+---
 
-| Chức năng | GPIO |
-| --- | --- |
-| Relay (Active HIGH) | 17 |
+## 💻 Dashboard & AI (FastAPI + YOLOv8)
 
-### Buzzer (`main/app_main.c`)
+Backend chạy trên Laptop để gánh tải xử lý AI nặng:
+- **Ngôn ngữ**: Python 3.10+ (FastAPI).
+- **AI Model**: YOLOv8 (`models/yolo_best.pt`) nhận diện lửa realtime.
+- **Tính năng**:
+    - Nhận luồng MJPEG từ ESP32-CAM.
+    - Vẽ BoundBox và gửi kết quả xác thực về ESP32-S3 qua HTTP POST.
+    - Dashboard Web xem video feed, telemetry và điều khiển thông số.
 
-| Chức năng | GPIO |
-| --- | --- |
-| Buzzer (Active LOW) | 16 |
-
-## Yêu Cầu
-
-- ESP-IDF `v5.x` (đã build với `v5.5.2`)
-- Board ESP32-S3 N16R8
-- Driver motor L298N
-- 4× Servo SG90/MG90S (50 Hz, xung 450-2400 µs)
-- 2× Cảm biến lửa IR (digital output, active LOW)
-- 1× HC-SR04
-- 1× Relay module
-- 1× Buzzer (active LOW)
-
-## Build và Flash
-
+### Chạy Dashboard:
 ```bash
-cd /path/to/FireVisonBot
-. $IDF_PATH/export.sh
-idf.py set-target esp32s3
-idf.py build
-idf.py -p /dev/ttyUSB0 flash monitor
-```
-
-Thay `/dev/ttyUSB0` bằng cổng serial của bạn (Windows: `COM3`, `COM4`, ...).
-
-## Dashboard — chạy Backend (BE) và giao diện (UI)
-
-Backend là **FastAPI** ([`dashboard/main.py`](dashboard/main.py)): chạy YOLO trên **máy tính (laptop)**, đọc luồng MJPEG từ ESP32-CAM, poll JSON telemetry từ ESP32-S3, phát MJPEG đã vẽ box qua `/ai_feed`. Giao diện web nằm trong `dashboard/templates/` + `dashboard/static/` và được phục vụ cùng cổng với BE.
-
-### Yêu cầu (máy chạy dashboard)
-
-- **Python 3.10+** (khuyến nghị 3.11)
-- **PyTorch** sẽ được kéo theo qua gói `ultralytics` (lần đầu cài có thể lâu)
-- File model mặc định: [`models/yolo_best.pt`](models/README.md) — đặt file `.pt` vào thư mục `models/` (xem `models/README.md`)
-
-### Bước 1 — Môi trường Python
-
-**Windows (PowerShell), từ thư mục gốc repo:**
-
-```powershell
 cd dashboard
 python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-pip install -U pip
+# Activate venv (Windows: .\.venv\Scripts\activate | Linux: source .venv/bin/activate)
 pip install -r requirements.txt
-```
-
-**Linux / macOS:**
-
-```bash
-cd dashboard
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -U pip
-pip install -r requirements.txt
-```
-
-### Bước 2 — Chạy backend (BE)
-
-Vẫn trong thư mục `dashboard/` (đã kích hoạt venv):
-
-```bash
-uvicorn main:app --host 0.0.0.0 --port 8765
-```
-
-Hoặc:
-
-```bash
 python main.py
 ```
 
-- BE lắng nghe **`0.0.0.0:8765`** (máy khác trong LAN truy cập được qua IP laptop).
-- Log trong terminal: stream MJPEG, YOLO, lỗi kết nối telemetry.
+---
 
-### Bước 3 — Mở UI (trình duyệt)
+## 🛠️ Hướng Dẫn Cài Đặt Firmware
 
-Trên chính máy chạy BE:
+### Yêu cầu:
+- ESP-IDF v5.x (Khuyến nghị v5.2+).
+- Cài đặt môi trường `idf.py`.
 
-- Mở: **http://localhost:8765**
-
-Từ điện thoại / máy khác cùng WiFi:
-
-- `http://IP-máy-tính:8765` (ví dụ `http://192.168.1.50:8765`)
-
-UI gồm cấu hình URL stream, URL telemetry robot, xem video `/ai_feed`, log và sensor (qua WebSocket).
-
-### Bước 4 — Cấu hình trong UI (sau khi mở trang)
-
-1. **URL luồng camera (MJPEG)** — thường là ESP32-CAM, dạng `http://IP-CAM:81/stream` (tùy sketch; tham khảo [`components/camera/camera.ino`](components/camera/camera.ino)).
-2. **URL telemetry ESP32-S3** — phải là **IP thật của ESP32-S3**, không dùng IP gateway (`.1`), dạng `http://IP-S3:8080/api/status` (cổng/path đúng theo firmware `telemetry_http` của bạn).
-
-Lưu cấu hình trên form UI (gọi `POST /api/config`) rồi kiểm tra log panel nếu stream/robot vẫn offline.
-
-### Gợi ý xử lý sự cố nhanh
-
-| Hiện tượng | Gợi ý |
-| --- | --- |
-| `ModuleNotFoundError` | Chạy lại `pip install -r requirements.txt` trong đúng venv. |
-| UI không mở được | Kiểm tra firewall Windows có chặn cổng **8765**; thử `http://127.0.0.1:8765`. |
-| Không có hình / YOLO không chạy | Kiểm tra `models/yolo_best.pt` tồn tại; stream URL đúng và CAM đang bật. |
-| Robot “Offline” | Điền đúng `http://IP-S3:8080/api/status`; laptop và S3 cùng mạng. |
-
-### API tham khảo (BE)
-
-- `GET /` — trang dashboard (UI)
-- `GET /ai_feed` — MJPEG đã vẽ detection
-- `GET` / `POST /api/config` — đọc/ghi cấu hình stream, robot, YOLO
-- `GET /api/robot` — proxy một lần tới telemetry S3
-- `WebSocket /ws` — log + sensor + detection realtime
-
-### Logic relay trên xe (ESP32-S3) + camera
-
-- **IR phải** (ổn định): **khóa servo tại góc đang quét** → **quay bánh ~180°** → vào trạng thái chờ (IR trái / camera).
-- **Relay bơm**: chỉ **BẬT** khi **IR trái có lửa** và **độ tin cậy camera (YOLO) ≥ 65%** trong cửa sổ ~1,5s gần nhất.
-- Dashboard (laptop) **POST** `{"confidence":0.0…1.0}` lên S3: `POST http://<IP-S3>:8080/api/ai_fire` (mặc định cấu hình trong `dashboard/main.py`). Telemetry `GET /api/status` có thêm `ai_confidence`, `ai_fresh_above_65`.
-
-### Script demo OpenCV (không cần trình duyệt)
-
-Từ gốc repo, sau khi cài `ultralytics`, `opencv-python`, `numpy`:
-
+### Build & Flash:
 ```bash
-python scripts/yolo_mjpeg_viewer.py
+# Đặt target
+idf.py set-target esp32s3
+# Build dự án
+idf.py build
+# Flash và xem log
+idf.py -p COMx flash monitor
 ```
+*(Thay `COMx` bằng cổng thực tế trên máy bạn)*
 
-Chỉnh `stream_url` trong file cho đúng IP ESP32-CAM; model đọc từ `models/yolo_best.pt`.
+---
 
-## Cấu Trúc Dự Án
+## ⚙️ Công Thức Tính Toán Quan Trọng
 
-```text
-FireVisonBot/
-├── CMakeLists.txt
-├── main/
-│   ├── CMakeLists.txt
-│   └── app_main.c              ← State machine chính
-├── components/
-│   ├── motor/
-│   │   ├── CMakeLists.txt
-│   │   ├── include/motor.h
-│   │   └── motor.c             ← L298N driver (forward/backward/turn)
-│   ├── servo/
-│   │   ├── CMakeLists.txt
-│   │   ├── include/servo.h
-│   │   └── servo.c             ← 4 servo MCPWM driver
-│   ├── frame_sensor/
-│   │   ├── CMakeLists.txt
-│   │   ├── include/frame_sensor.h
-│   │   └── frame_sensor.c      ← IR flame sensor driver
-│   ├── hc_sr04/
-│   │   ├── CMakeLists.txt
-│   │   ├── include/hc_sr04.h
-│   │   └── hc_sr04.c           ← Ultrasonic sensor driver
-│   └── relay/
-│       ├── CMakeLists.txt
-│       ├── include/relay.h
-│       └── relay.c              ← Water pump relay driver
-│   └── camera/
-│       └── camera.ino           ← Sketch ESP32-CAM (stream MJPEG, tham khảo)
-├── dashboard/                   ← BE (FastAPI) + UI web — xem mục Dashboard
-├── models/                      ← Đặt yolo_best.pt tại đây (xem models/README.md)
-├── scripts/
-│   └── yolo_mjpeg_viewer.py     ← Demo YOLO + MJPEG qua OpenCV
-├── trained_model/               ← (nếu có) model nhúng ESP32
-└── sdkconfig
-```
+### 1. Khoảng cách Siêu âm:
+`Khoảng cách (cm) = Thời gian (µs) × 0.0343 / 2`
+*(Sử dụng MCPWM capture trong firmware để có độ chính xác cao)*
 
-## Điểm Có Thể Tùy Chỉnh
+### 2. Góc Servo SG90:
+`Pulse Width (µs) = ((Góc / 180) × (2500 - 500)) + 500`
+- **0°**: ~500µs (Xung mức cao).
+- **90°**: ~1500µs.
+- **180°**: ~2500µs.
 
-- Logic chuyển động và timing: [`main/app_main.c`](main/app_main.c)
-- Chân motor, tần số/độ phân giải PWM: [`components/motor/motor.c`](components/motor/motor.c)
-- Chân servo, dải xung: [`components/servo/servo.c`](components/servo/servo.c)
-- Chân cảm biến lửa: [`components/frame_sensor/frame_sensor.c`](components/frame_sensor/frame_sensor.c)
-- Chân siêu âm: [`components/hc_sr04/hc_sr04.c`](components/hc_sr04/hc_sr04.c)
-- Chân relay: [`components/relay/relay.c`](components/relay/relay.c)
+---
 
-## TODO
-
-- [ ] Kết nối ESP32-CAM (UART/WiFi) để nhận stream hình ảnh
-- [ ] Tích hợp TFLite model (`fire_model_int8.tflite`) vào state AI_VERIFY
-- [ ] Thêm điều khiển từ xa (WiFi/Bluetooth)
-- [ ] Thêm chế độ điều khiển manual
-
-## Checklist An Toàn
-
-- Đảm bảo ESP32, L298N, servo và relay dùng chung GND
-- Không cấp nguồn động cơ trực tiếp từ board ESP32
-- Dùng nguồn riêng cho motor (7-12V) và servo (5V)
-- Relay nên có diode chống ngược (flyback diode)
-- Kiểm tra GPIO pin map trước khi flash lần đầu
+## 📝 Ghi chú Kỹ thuật
+- **Nguồn điện**: Tuyệt đối không dùng chung nguồn 3.3V của ESP cho Motor/Servo. Sử dụng nguồn riêng 7.4V (Lipo 2S) cho Motor và 5V ổn định cho Servo/ESP.
+- **GND**: Phải nối chung GND của tất cả các module.
+- **Chế độ FPV**: Servo Pan (dưới) sẽ bám theo góc của cảm biến lửa IR trái để Camera luôn hướng về tiêu điểm dập lửa.

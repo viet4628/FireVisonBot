@@ -144,3 +144,20 @@ void motor_stop(void)
     ledc_set_duty(LEDC_LOW_SPEED_MODE, MOTOR2_CHANNEL, 0);
     ledc_update_duty(LEDC_LOW_SPEED_MODE, MOTOR2_CHANNEL);
 }
+
+void motor_drive_curve(uint32_t left_duty, uint32_t right_duty)
+{
+    if (left_duty  > DUTY_MAX) left_duty  = DUTY_MAX;
+    if (right_duty > DUTY_MAX) right_duty = DUTY_MAX;
+
+    /* Cả hai bánh đều tiến — chỉ duty khác nhau để quẹo cong */
+    gpio_set_level(RPWM_GPIO1, 1);
+    gpio_set_level(LPWM_GPIO1, 0);
+    gpio_set_level(RPWM_GPIO2, 1);
+    gpio_set_level(LPWM_GPIO2, 0);
+
+    ledc_set_duty(LEDC_LOW_SPEED_MODE, MOTOR1_CHANNEL, left_duty);
+    ledc_update_duty(LEDC_LOW_SPEED_MODE, MOTOR1_CHANNEL);
+    ledc_set_duty(LEDC_LOW_SPEED_MODE, MOTOR2_CHANNEL, right_duty);
+    ledc_update_duty(LEDC_LOW_SPEED_MODE, MOTOR2_CHANNEL);
+}
